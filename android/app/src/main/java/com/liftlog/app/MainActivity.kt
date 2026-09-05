@@ -1,0 +1,532 @@
+package com.liftlog.app
+
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import android.widget.Toast
+import org.json.JSONObject
+import androidx.activity.ComponentActivity
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.Query
+import com.google.firebase.firestore.SetOptions
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.tasks.await
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import java.util.UUID
+import java.util.concurrent.TimeUnit
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+
+private val Lime = Color(0xFF9DFF1A)
+private val Dark = Color(0xFF101112)
+
+@Serializable data class CatalogFile(val formatVersion: Int = 1, val presets: List<ExercisePreset> = emptyList())
+@Serializable data class ExercisePreset(
+    val presetId: String = "", val nameKo: String = "", val nameEn: String = "",
+    val defaultUiPart: String = "", val searchAliases: List<String> = emptyList(),
+    val canonicalPresetId: String = "", val storageExerciseId: String = "", val familyId: String = "",
+    val canonicalVariantKey: String = "", val visualVariantKey: String? = null,
+    val recordType: String = "weight_reps", val laterality: String = "bilateral", val implementMultiplier: Int = 1,
+    val defaultLoadState: String = "external_load", val allowedLoadStates: List<String> = emptyList()
+)
+data class SetEntry(
+    val id: String = UUID.randomUUID().toString(), val loadState: String = "external_load",
+    val inputLoadValue: String = "", val inputLoadUnit: String = "kg", val reps: String = "", val durationSeconds: String = "", val completed: Boolean = true
+)
+data class WorkoutEntry(
+    val id: String = UUID.randomUUID().toString(), val preset: ExercisePreset,
+    val sets: List<SetEntry> = listOf(SetEntry(loadState = preset.defaultLoadState))
+)
+data class WorkoutRecord(
+    val id: String = UUID.randomUUID().toString(), val date: String,
+    val exercises: List<WorkoutEntry>
+)
+
+class MainActivity : ComponentActivity() {
+    private val auth by lazy { FirebaseAuth.getInstance() }
+    private var pendingExport: String? = null
+    private val exportDocument = registerForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
+        val payload = pendingExport ?: return@registerForActivityResult
+        if (uri != null) contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(payload) }
+        pendingExport = null
+    }
+    private val googleLogin = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        if (result.resultCode != RESULT_OK) {
+            Toast.makeText(this, "Google 계정 선택이 취소되었거나 OAuth 설정이 일치하지 않습니다. (결과 코드: ${result.resultCode})", Toast.LENGTH_LONG).show()
+            return@registerForActivityResult
+        }
+        try {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(result.data).getResult(ApiException::class.java)
+            val credential = GoogleAuthProvider.getCredential(account.idToken, null)
+            auth.signInWithCredential(credential).addOnFailureListener { error ->
+                Toast.makeText(this, "Firebase 로그인 실패: ${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+            }
+        } catch (error: Exception) {
+            Toast.makeText(this, "Google 로그인 실패: ${error.message ?: error.javaClass.simpleName}", Toast.LENGTH_LONG).show()
+        }
+    }
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent { LiftLogApp(onGoogleLogin = ::startGoogleLogin, onExport = ::saveExport) }
+    }
+    private fun startGoogleLogin() {
+        val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(getString(R.string.default_web_client_id)).requestEmail().build()
+        googleLogin.launch(GoogleSignIn.getClient(this, options).signInIntent)
+    }
+    private fun saveExport(payload: String) {
+        pendingExport = payload
+        exportDocument.launch("liftlog-workouts-${today()}.json")
+    }
+}
+
+@Composable
+private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
+    val catalog = loadCatalog()
+    val appContext = LocalContext.current
+    val appPrefs = remember { appContext.getSharedPreferences("liftlog", Context.MODE_PRIVATE) }
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var darkMode by rememberSaveable { mutableStateOf(appPrefs.getBoolean("darkMode", true)) }
+    var records by remember { mutableStateOf(emptyList<WorkoutRecord>()) }
+    var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
+    DisposableEffect(Unit) {
+        val listener = FirebaseAuth.AuthStateListener { user = it.currentUser }
+        FirebaseAuth.getInstance().addAuthStateListener(listener)
+        onDispose { FirebaseAuth.getInstance().removeAuthStateListener(listener) }
+    }
+    DisposableEffect(user?.uid) {
+        val currentUser = user
+        if (currentUser == null) {
+            records = emptyList()
+            onDispose { }
+        } else {
+            val registration = FirebaseFirestore.getInstance().collection("users").document(currentUser.uid)
+                .collection("workouts").orderBy("startedAt", Query.Direction.DESCENDING)
+                .addSnapshotListener { snapshot, _ -> records = snapshot?.documents?.mapNotNull(::recordFromMap) ?: emptyList() }
+            onDispose { registration.remove() }
+        }
+    }
+    val scheme = if (darkMode) darkColorScheme(background = Dark, surface = Color(0xFF242526), primary = Lime)
+        else lightColorScheme(primary = Color(0xFF5E9F00))
+    MaterialTheme(colorScheme = scheme) {
+        Scaffold(
+            bottomBar = {
+                NavigationBar {
+                    listOf("운동 설명", "운동 기록", "AI 분석", "환경설정").forEachIndexed { index, label ->
+                        NavigationBarItem(selected = selectedTab == index, onClick = { selectedTab = index },
+                            icon = { Text((index + 1).toString()) }, label = { Text(label) })
+                    }
+                }
+            }
+        ) { padding ->
+            Box(Modifier.fillMaxSize().padding(padding)) {
+                when (selectedTab) {
+                    0 -> ExerciseGuide(catalog)
+                    1 -> WorkoutScreen(catalog, records, onSave = { record ->
+                        if (user != null) saveWorkout(record)
+                    }, onDelete = { id ->
+                        records = records.filterNot { it.id == id }; deleteWorkout(id)
+                    }, onExport = { onExport(exportPayload(records)) })
+                    2 -> AnalysisScreen(records)
+                    else -> SettingsScreen(darkMode, { enabled ->
+                        darkMode = enabled; appPrefs.edit().putBoolean("darkMode", enabled).apply()
+                        user?.let { FirebaseFirestore.getInstance().collection("users").document(it.uid).set(mapOf("theme" to if (enabled) "dark" else "light"), SetOptions.merge()) }
+                    }, user, onGoogleLogin)
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun ExerciseGuide(catalog: List<ExercisePreset>) {
+    var group by rememberSaveable { mutableStateOf("가슴") }
+    val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+        Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동을 봅니다.")
+        Spacer(Modifier.height(18.dp))
+        BodySelector(group, { group = it })
+        Spacer(Modifier.height(12.dp))
+        Text("$group 운동", fontWeight = FontWeight.Bold)
+        LazyColumn {
+            items(catalog.filter { koreanPart(it.defaultUiPart) == group }) { preset ->
+                ListItem(headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
+                    supportingContent = { Text(group) })
+                HorizontalDivider()
+            }
+        }
+    }
+}
+
+@Composable private fun BodySelector(selected: String, select: (String) -> Unit) {
+    val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        // The Android artwork is intentionally represented as selectable regions, so every visible region is tappable.
+        Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().height(230.dp)) {
+            Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Text("전면 · 후면 신체 지도", fontWeight = FontWeight.Bold)
+                Text("선택: $selected", color = MaterialTheme.colorScheme.primary)
+                Spacer(Modifier.height(18.dp))
+                groups.chunked(3).forEach { row ->
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        row.forEach { item -> FilterChip(selected = selected == item, onClick = { select(item) }, label = { Text(item) }, modifier = Modifier.weight(1f)) }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun WorkoutScreen(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, onSave: (WorkoutRecord) -> Unit, onDelete: (String) -> Unit, onExport: () -> Unit) {
+    var editing by remember { mutableStateOf<WorkoutRecord?>(null) }
+    if (editing != null) WorkoutEditor(catalog, editing!!, { onSave(it); editing = null }, { editing = null })
+    else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
+}
+
+@Composable private fun WorkoutHistory(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, edit: (WorkoutRecord) -> Unit, remove: (String) -> Unit, export: () -> Unit) {
+    var deleting by remember { mutableStateOf<WorkoutRecord?>(null) }
+    if (deleting != null) AlertDialog(onDismissRequest = { deleting = null }, title = { Text("운동 기록 삭제") },
+        text = { Text("이 운동기록을 삭제하시겠습니까?") }, confirmButton = { TextButton(onClick = { remove(deleting!!.id); deleting = null }) { Text("삭제") } },
+        dismissButton = { TextButton(onClick = { deleting = null }) { Text("취소") } })
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text("WORKOUT LOG", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+            Row {
+                TextButton(onClick = export, enabled = records.isNotEmpty()) { Text("내보내기") }
+                FilledTonalButton(onClick = { edit(WorkoutRecord(date = today(), exercises = emptyList())) }) { Icon(Icons.Default.Add, null); Text(" 기록") }
+            }
+        }
+        LazyColumn(contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(records) { record ->
+                ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(record.date, fontWeight = FontWeight.Bold)
+                        Text(record.exercises.joinToString { it.preset.nameKo }.ifBlank { "운동 없음" }, maxLines = 1)
+                    }
+                    IconButton(onClick = { edit(record) }) { Icon(Icons.Default.Edit, "수정") }
+                    IconButton(onClick = { deleting = record }) { Icon(Icons.Default.Delete, "삭제") }
+                }}
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun WorkoutEditor(catalog: List<ExercisePreset>, initial: WorkoutRecord, save: (WorkoutRecord) -> Unit, cancel: () -> Unit) {
+    var date by remember { mutableStateOf(initial.date) }
+    var exercises by remember { mutableStateOf(initial.exercises) }
+    var query by remember { mutableStateOf("") }
+    Scaffold(topBar = {
+        TopAppBar(
+            title = { Text("운동 기록 수정") },
+            navigationIcon = { TextButton(onClick = cancel) { Text("취소") } },
+            actions = {
+                TextButton(onClick = { save(initial.copy(date = date, exercises = exercises)) }, enabled = exercises.isNotEmpty()) {
+                    Text("SAVE", color = Lime, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }) { padding ->
+        LazyColumn(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp), contentPadding = PaddingValues(bottom = 30.dp)) {
+            item { OutlinedTextField(date, { date = it }, label = { Text("날짜 (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth()) }
+            items(exercises, key = { it.id }) { exercise ->
+                ExerciseCard(exercise, { changed -> exercises = exercises.map { if (it.id == changed.id) changed else it } }, { exercises = exercises.filterNot { it.id == exercise.id } })
+            }
+            item {
+                OutlinedTextField(query, { query = it }, label = { Text("운동 검색") }, modifier = Modifier.fillMaxWidth())
+                catalog.filter { matches(it, query) }.take(8).forEach { preset ->
+                    ListItem(headlineContent = { Text(preset.nameKo) }, modifier = Modifier.clickable { exercises = exercises + WorkoutEntry(preset = preset); query = "" })
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun ExerciseCard(exercise: WorkoutEntry, change: (WorkoutEntry) -> Unit, delete: () -> Unit) {
+    ElevatedCard(Modifier.fillMaxWidth().padding(vertical = 8.dp)) { Column(Modifier.padding(14.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) { Text(exercise.preset.nameKo, color = Lime, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f)); IconButton(onClick = delete) { Icon(Icons.Default.Delete, "운동 삭제") } }
+        exercise.sets.forEachIndexed { index, set ->
+            Column(Modifier.fillMaxWidth()) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("SET ${index + 1}", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f))
+                    LoadStateSelector(set.loadState, exercise.preset.allowedLoadStates.ifEmpty { listOf(exercise.preset.defaultLoadState) }) { state -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(loadState = state) else it })) }
+                    Checkbox(checked = set.completed, onCheckedChange = { checked -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(completed = checked) else it })) })
+                    IconButton(onClick = { change(exercise.copy(sets = exercise.sets.filterNot { it.id == set.id })) }, enabled = exercise.sets.size > 1) { Icon(Icons.Default.Delete, "세트 삭제") }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    val recordType = exercise.preset.recordType
+                    val needsLoad = recordType !in setOf("reps_only", "time")
+                    val needsReps = recordType !in setOf("time", "weight_time")
+                    val needsTime = recordType in setOf("time", "weight_time")
+                    if (needsLoad) {
+                        OutlinedTextField(set.inputLoadValue, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadValue = value) else it })) }, label = { Text("중량") }, modifier = Modifier.weight(1f))
+                        Spacer(Modifier.width(6.dp)); UnitSelector(set.inputLoadUnit) { unit -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadUnit = unit) else it })) }; Spacer(Modifier.width(6.dp))
+                    }
+                    if (needsReps) OutlinedTextField(set.reps, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(reps = value) else it })) }, label = { Text("REPS") }, modifier = Modifier.weight(1f))
+                    if (needsTime) OutlinedTextField(set.durationSeconds, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(durationSeconds = value) else it })) }, label = { Text("초") }, modifier = Modifier.weight(1f))
+                }
+            }
+        }
+        TextButton(
+            onClick = {
+                change(exercise.copy(sets = exercise.sets + SetEntry(loadState = exercise.preset.defaultLoadState)))
+            },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("+ SET") }
+    }}
+}
+
+@Composable private fun LoadStateSelector(value: String, allowed: List<String>, change: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { expanded = true }) { Text(loadStateLabel(value), maxLines = 1) }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            allowed.forEach { state -> DropdownMenuItem(text = { Text(loadStateLabel(state)) }, onClick = { change(state); expanded = false }) }
+        }
+    }
+}
+private fun loadStateLabel(state: String) = when (state) {
+    "bodyweight" -> "맨몸"; "external_load" -> "외부 중량"; "added_weight" -> "추가 중량"; "assisted" -> "보조 중량"; "band_assisted" -> "밴드 보조"; "band_resisted" -> "밴드 저항"; else -> state
+}
+
+@Composable private fun UnitSelector(value: String, change: (String) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box { OutlinedButton(onClick = { expanded = true }) { Text(value.uppercase()) }; DropdownMenu(expanded, { expanded = false }) { listOf("kg", "lb").forEach { DropdownMenuItem({ Text(it.uppercase()) }, { change(it); expanded = false }) } } }
+}
+
+@Composable private fun AnalysisScreen(records: List<WorkoutRecord>) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var result by remember { mutableStateOf("최근 기록 또는 누적 기록 분석을 선택하세요.") }
+    var analyzing by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        Text("AI ANALYSIS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+        Text("최근 세션 분석과 전체 누적 분석을 분리합니다.")
+        Row(Modifier.padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { scope.launch { analyzing = true; result = requestAnalysis(context, records, false); analyzing = false } }, enabled = records.isNotEmpty() && !analyzing) { Text("최근 기록 분석") }
+            Button(onClick = { scope.launch { analyzing = true; result = requestAnalysis(context, records, true); analyzing = false } }, enabled = records.isNotEmpty() && !analyzing) { Text("누적 기록 분석") }
+        }
+        if (analyzing) LinearProgressIndicator(Modifier.fillMaxWidth())
+        ElevatedCard { Text(result, Modifier.padding(18.dp)) }
+    }
+}
+
+@Composable private fun SettingsScreen(dark: Boolean, setDark: (Boolean) -> Unit, user: FirebaseUser?, login: () -> Unit) {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("liftlog", Context.MODE_PRIVATE) }
+    var height by rememberSaveable { mutableStateOf(prefs.getString("heightCm", "") ?: "") }; var weight by rememberSaveable { mutableStateOf(prefs.getString("weightKg", "") ?: "") }
+    LaunchedEffect(user?.uid) {
+        if (user != null) FirebaseFirestore.getInstance().collection("users").document(user.uid).get().addOnSuccessListener { document ->
+            document.getDouble("heightCm")?.let { height = it.toString().removeSuffix(".0"); prefs.edit().putString("heightCm", height).apply() }
+            document.getDouble("weightKg")?.let { weight = it.toString().removeSuffix(".0"); prefs.edit().putString("weightKg", weight).apply() }
+        }
+    }
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        Text("SETTINGS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+        if (user == null) Button(onClick = login, modifier = Modifier.fillMaxWidth()) { Text("Google로 로그인") }
+        else {
+            Text("로그인됨: ${user.displayName ?: user.email ?: "Google 사용자"}")
+            TextButton(onClick = { FirebaseAuth.getInstance().signOut() }) { Text("로그아웃") }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) { Text("다크 모드", Modifier.weight(1f)); Switch(dark, setDark) }
+        OutlinedTextField(height, { value ->
+            height = value; prefs.edit().putString("heightCm", value).apply(); user?.let { FirebaseFirestore.getInstance().collection("users").document(it.uid).set(mapOf("heightCm" to value.toDoubleOrNull()), SetOptions.merge()) }
+        }, label = { Text("키 (cm)") }, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(weight, { value ->
+            weight = value; prefs.edit().putString("weightKg", value).apply(); user?.let { FirebaseFirestore.getInstance().collection("users").document(it.uid).set(mapOf("weightKg" to value.toDoubleOrNull()), SetOptions.merge()) }
+        }, label = { Text("몸무게 (kg)") }, modifier = Modifier.fillMaxWidth())
+        Text("키와 몸무게는 Gemini 분석 요청에 자동으로 포함됩니다.", style = MaterialTheme.typography.bodySmall)
+    }
+}
+
+@Composable private fun loadCatalog(): List<ExercisePreset> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return remember { Json { ignoreUnknownKeys = true }.decodeFromString<CatalogFile>(context.assets.open("friend_exercise_catalog_v1.json").bufferedReader().use { it.readText() }).presets }
+}
+private fun koreanPart(part: String) = when (part) { "chest" -> "가슴"; "back" -> "등"; "lower_body", "legs" -> "하체"; "shoulders" -> "어깨"; "arms" -> "팔"; else -> "복부" }
+private fun matches(p: ExercisePreset, query: String): Boolean { val normalized = query.replace(" ", "").lowercase(); return normalized.isBlank() || listOf(p.nameKo, p.nameEn, *p.searchAliases.toTypedArray()).any { it.replace(" ", "").lowercase().contains(normalized) || normalized.contains(it.replace(" ", "").lowercase()) } }
+private fun today() = java.time.LocalDate.now().toString()
+private fun kg(value: String, unit: String) = value.toDoubleOrNull()?.let { if (unit == "lb") it * 0.45359237 else it }
+private fun recentAnalysis(record: WorkoutRecord) = "최근 ${record.date} 기록의 ${record.exercises.size}개 종목을 분석 대상으로 선택했습니다. Gemini 서버를 연결하면 웹 앱과 동일한 상세 결과를 표시합니다."
+private fun cumulativeAnalysis(records: List<WorkoutRecord>) = "누적 ${records.size}개 기록(${records.last().date} ~ ${records.first().date})을 분석 대상으로 선택했습니다. 최신 1회가 아니라 모든 기록을 분석 요청에 포함합니다."
+private val analysisClient = OkHttpClient.Builder()
+    .connectTimeout(30, TimeUnit.SECONDS)
+    .writeTimeout(30, TimeUnit.SECONDS)
+    .readTimeout(180, TimeUnit.SECONDS)
+    .callTimeout(190, TimeUnit.SECONDS)
+    .build()
+private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecord>, cumulative: Boolean): String = withContext(Dispatchers.IO) {
+    try {
+        val prefs = context.getSharedPreferences("liftlog", Context.MODE_PRIVATE)
+        val idToken = FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
+            ?: return@withContext "AI 분석에는 Google 로그인이 필요합니다."
+        val history = records.map(::analysisRecord)
+        val profile = mapOf("heightCm" to prefs.getString("heightCm", ""), "weightKg" to prefs.getString("weightKg", ""))
+        val workoutData: Map<String, Any?> = if (cumulative) mapOf(
+            "profile" to profile,
+            "cumulativeSummary" to mapOf("workoutCount" to history.size, "from" to records.last().date, "to" to records.first().date),
+            "workoutHistory" to history
+        ) else mapOf("profile" to profile, "latestWorkout" to history.first())
+        val payload = JSONObject(mapOf("analysisMode" to if (cumulative) "cumulative" else "latest", "workoutData" to workoutData)).toString()
+        val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/analyze")
+            .header("Authorization", "Bearer $idToken")
+            .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
+        analysisClient.newCall(request).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) return@withContext "분석 서버 오류 (${response.code}): ${JSONObject(text).optString("error", text)}"
+            val json = JSONObject(text)
+            listOf("총평" to json.optString("summary"), "잘한 점" to json.optString("good"), "개선할 점" to json.optString("bad")).joinToString("\n\n") { "${it.first}\n${it.second}" }
+        }
+    } catch (error: Exception) { "AI 분석 연결 실패: ${error.message ?: error.javaClass.simpleName}" }
+}
+private fun analysisRecord(record: WorkoutRecord): Map<String, Any?> = mapOf(
+    "sourceRecordId" to record.id,
+    "status" to "completed",
+    "startedAt" to record.date,
+    "estimatedTrainingDurationMinutes" to maxOf(20, ((record.exercises.sumOf { it.sets.size } * 2.5 + record.exercises.size * 3) / 5).toInt() * 5),
+    "exercises" to record.exercises.mapIndexed { index, exercise ->
+        mapOf(
+            "sourceExerciseInstanceId" to exercise.id,
+            "orderIndex" to index,
+            "presetId" to exercise.preset.presetId,
+            "nameSnapshot" to exercise.preset.nameKo,
+            "defaultUiPart" to exercise.preset.defaultUiPart,
+            "sets" to exercise.sets.mapIndexed { setIndex, set ->
+                mapOf("sourceSetId" to set.id, "setIndex" to setIndex, "loadState" to set.loadState,
+                    "inputLoadValue" to set.inputLoadValue, "inputLoadUnit" to set.inputLoadUnit,
+                    "weightKg" to kg(set.inputLoadValue, set.inputLoadUnit), "reps" to set.reps.toIntOrNull(),
+                    "durationSeconds" to set.durationSeconds.toIntOrNull(), "completed" to set.completed)
+            }
+        )
+    }
+)
+private fun exportPayload(records: List<WorkoutRecord>): String = JSONObject(mapOf(
+    "format" to "yeonsik.workout-transfer", "formatVersion" to 2, "catalogContractVersion" to 1,
+    "catalogSourceCommit" to "381e160771b8859ac68c51ec67c1e6ed6c08a26f", "sourceApp" to "liftlog",
+    "exportedAt" to java.time.Instant.now().toString(), "workouts" to records.map(::exportWorkout)
+)).toString(2)
+private fun exportWorkout(record: WorkoutRecord): Map<String, Any?> = mapOf(
+    "sourceRecordId" to record.id, "status" to "completed", "title" to null,
+    "startedAt" to java.time.LocalDate.parse(record.date).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant().toString(),
+    "endedAt" to null, "memo" to null,
+    "exercises" to record.exercises.mapIndexed { exerciseIndex, exercise ->
+        val preset = exercise.preset
+        mapOf("sourceExerciseInstanceId" to exercise.id, "orderIndex" to exerciseIndex + 1,
+            "storageExerciseId" to preset.storageExerciseId.ifBlank { preset.presetId }, "presetId" to preset.presetId,
+            "canonicalPresetId" to preset.canonicalPresetId.ifBlank { preset.presetId }, "familyId" to preset.familyId.ifBlank { preset.presetId },
+            "canonicalVariantKey" to preset.canonicalVariantKey.ifBlank { "{}" }, "visualVariantKey" to preset.visualVariantKey,
+            "nameSnapshot" to preset.nameKo, "defaultUiPart" to normalizedPart(preset.defaultUiPart),
+            "recordType" to preset.recordType, "laterality" to preset.laterality, "implementMultiplier" to preset.implementMultiplier, "memo" to null,
+            "sets" to exercise.sets.mapIndexed { setIndex, set ->
+                val values = mutableMapOf<String, Any?>("sourceSetId" to set.id, "setIndex" to setIndex + 1,
+                    "loadState" to set.loadState, "inputLoadValue" to set.inputLoadValue.toDoubleOrNull(), "inputLoadUnit" to set.inputLoadUnit,
+                    "reps" to set.reps.toIntOrNull(), "durationSeconds" to set.durationSeconds.toIntOrNull(), "completed" to set.completed,
+                    "restSeconds" to null, "rir" to null, "rpe" to null, "memo" to null)
+                values[when (set.loadState) { "added_weight" -> "addedWeightKg"; "assisted" -> "assistedWeightKg"; else -> "weightKg" }] = kg(set.inputLoadValue, set.inputLoadUnit)
+                values
+            }
+        )
+    }
+)
+private fun normalizedPart(part: String) = if (part in setOf("chest", "back", "legs", "shoulders", "arms", "abs")) part else "abs"
+private fun saveWorkout(record: WorkoutRecord) { val user = FirebaseAuth.getInstance().currentUser ?: return; FirebaseFirestore.getInstance().collection("users").document(user.uid).collection("workouts").document(record.id).set(recordToMap(record)) }
+private fun deleteWorkout(id: String) { val user = FirebaseAuth.getInstance().currentUser ?: return; FirebaseFirestore.getInstance().collection("users").document(user.uid).collection("workouts").document(id).delete() }
+private fun recordToMap(record: WorkoutRecord): Map<String, Any?> = mapOf(
+    "id" to record.id,
+    "sourceRecordId" to record.id, "status" to "completed", "title" to null, "memo" to null,
+    "startedAt" to com.google.firebase.Timestamp(java.util.Date.from(java.time.LocalDate.parse(record.date).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant())),
+    "endedAt" to com.google.firebase.Timestamp.now(),
+    "exercises" to record.exercises.mapIndexed { index, exercise ->
+        mapOf(
+            "exerciseId" to exercise.preset.presetId,
+            "presetId" to exercise.preset.presetId, "canonicalPresetId" to exercise.preset.presetId,
+            "storageExerciseId" to exercise.preset.presetId, "sourceExerciseInstanceId" to exercise.id,
+            "orderIndex" to index, "nameSnapshot" to exercise.preset.nameKo,
+            "defaultUiPart" to exercise.preset.defaultUiPart,
+            "nameKo" to exercise.preset.nameKo,
+            "group" to exercise.preset.defaultUiPart,
+            "sets" to exercise.sets.map { set ->
+                val input = set.inputLoadValue.toDoubleOrNull() ?: 0.0
+                val canonical = kg(set.inputLoadValue, set.inputLoadUnit) ?: 0.0
+                mutableMapOf<String, Any?>(
+                    "setId" to set.id, "sourceSetId" to set.id, "loadState" to set.loadState,
+                    "reps" to (set.reps.toIntOrNull() ?: 0), "durationSeconds" to set.durationSeconds.toIntOrNull(), "completed" to set.completed,
+                    "inputLoadValue" to input, "inputLoadUnit" to set.inputLoadUnit
+                ).apply {
+                    put(when (set.loadState) {
+                        "added_weight" -> "addedWeightKg"
+                        "assisted" -> "assistedWeightKg"
+                        else -> "weightKg"
+                    }, canonical)
+                }
+            }
+        )
+    }
+)
+
+private fun recordFromMap(document: com.google.firebase.firestore.DocumentSnapshot): WorkoutRecord? {
+    val data = document.data ?: return null
+    val exercises = (data["exercises"] as? List<*>)?.mapNotNull { rawExercise ->
+        val exercise = rawExercise as? Map<*, *> ?: return@mapNotNull null
+        val preset = ExercisePreset(
+            presetId = (exercise["presetId"] ?: exercise["exerciseId"]) as? String ?: "",
+            nameKo = (exercise["nameSnapshot"] ?: exercise["nameKo"]) as? String ?: "운동",
+            defaultUiPart = (exercise["defaultUiPart"] ?: exercise["group"]) as? String ?: ""
+        )
+        val sets = (exercise["sets"] as? List<*>)?.mapNotNull { rawSet ->
+            val set = rawSet as? Map<*, *> ?: return@mapNotNull null
+            val canonical = set["weightKg"] ?: set["addedWeightKg"] ?: set["assistedWeightKg"]
+            SetEntry(
+                id = (set["sourceSetId"] ?: set["setId"]) as? String ?: UUID.randomUUID().toString(),
+                loadState = set["loadState"] as? String ?: "external_load",
+                inputLoadValue = (set["inputLoadValue"] as? Number)?.toString() ?: (canonical as? Number)?.toString() ?: "",
+                inputLoadUnit = set["inputLoadUnit"] as? String ?: "kg",
+                reps = (set["reps"] as? Number)?.toString() ?: "",
+                durationSeconds = (set["durationSeconds"] as? Number)?.toString() ?: "",
+                completed = set["completed"] as? Boolean ?: true
+            )
+        } ?: listOf(SetEntry())
+        WorkoutEntry(preset = preset, sets = sets)
+    } ?: return null
+    val startedAt = data["startedAt"]
+    val date = when (startedAt) {
+        is com.google.firebase.Timestamp -> java.time.Instant.ofEpochSecond(startedAt.seconds).atZone(java.time.ZoneId.systemDefault()).toLocalDate().toString()
+        is String -> startedAt.take(10)
+        else -> today()
+    }
+    return WorkoutRecord(document.id, date, exercises)
+}

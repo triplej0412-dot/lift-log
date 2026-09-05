@@ -1,0 +1,8 @@
+@import "tailwindcss"; /* 이 한 줄이 @tailwind base/components/utilities를 대신합니다 */
+
+/* 기존에 적었던 body 설정은 아래에 그대로 두셔도 됩니다 */
+body {
+  background-color: #121212;
+  color: white;
+  margin: 0;
+}

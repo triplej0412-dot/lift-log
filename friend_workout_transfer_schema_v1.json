@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "yeonsik.friend-workout-transfer.v1",
+  "title": "Yeonsik Friend Workout Transfer V1",
+  "description": "Raw strength workout interchange contract for future Yeonsik FitnessApp import. UI-independent; exercise identity and raw observations are normative.",
+  "type": "object",
+  "required": [
+    "format",
+    "formatVersion",
+    "catalogContractVersion",
+    "catalogSourceCommit",
+    "sourceApp",
+    "exportedAt",
+    "workouts"
+  ],
+  "properties": {
+    "format": {
+      "const": "yeonsik.workout-transfer"
+    },
+    "formatVersion": {
+      "const": 1
+    },
+    "catalogContractVersion": {
+      "const": 1
+    },
+    "catalogSourceCommit": {
+      "const": "381e160771b8859ac68c51ec67c1e6ed6c08a26f"
+    },
+    "sourceApp": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable application identifier, not a user-visible app title."
+    },
+    "exportedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "workouts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/workout"
+      },
+      "minItems": 1
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "workout": {
+      "type": "object",
+      "required": [
+        "sourceRecordId",
+        "status",
+        "startedAt",
+        "exercises"
+      ],
+      "properties": {
+        "sourceRecordId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": [
+            "in_progress",
+            "completed"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "endedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "date-time"
+        },
+        "memo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "exercises": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/exercise"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "exercise": {
+      "type": "object",
+      "required": [
+        "sourceExerciseInstanceId",
+        "orderIndex",
+        "storageExerciseId",
+        "presetId",
+        "canonicalPresetId",
+        "familyId",
+        "canonicalVariantKey",
+        "nameSnapshot",
+        "defaultUiPart",
+        "recordType",
+        "laterality",
+        "implementMultiplier",
+        "sets"
+      ],
+      "properties": {
+        "sourceExerciseInstanceId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "orderIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "storageExerciseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "presetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canonicalPresetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "familyId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "canonicalVariantKey": {
+          "type": "string",
+          "minLength": 1
+        },
+        "visualVariantKey": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "nameSnapshot": {
+          "type": "string",
+          "minLength": 1
+        },
+        "defaultUiPart": {
+          "enum": [
+            "chest",
+            "back",
+            "legs",
+            "shoulders",
+            "arms",
+            "abs"
+          ]
+        },
+        "recordType": {
+          "enum": [
+            "weight_reps",
+            "reps_only",
+            "time",
+            "weight_time",
+            "assisted_weight_reps",
+            "bodyweight_added_weight_reps"
+          ]
+        },
+        "laterality": {
+          "enum": [
+            "bilateral",
+            "unilateral"
+          ]
+        },
+        "implementMultiplier": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "memo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/set"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "set": {
+      "type": "object",
+      "required": [
+        "sourceSetId",
+        "setIndex",
+        "loadState",
+        "completed"
+      ],
+      "properties": {
+        "sourceSetId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "setIndex": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "loadState": {
+          "enum": [
+            "bodyweight",
+            "external_load",
+            "added_weight",
+            "assisted",
+            "band_assisted",
+            "band_resisted"
+          ]
+        },
+        "weightKg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "addedWeightKg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "assistedWeightKg": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "reps": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "durationSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "distanceMeters": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "restSeconds": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "rir": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 10
+        },
+        "rpe": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 10
+        },
+        "completed": {
+          "type": "boolean"
+        },
+        "memo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "extensions": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "x-yeonsik-inputConvention": {
+    "storedLoad": "per_implement_per_side_raw",
+    "unilateralReps": "per_side",
+    "bilateralIndependentImplements": "per_implement",
+    "barbellLoad": "total_including_bar",
+    "machineCableSmithLoad": "displayed_or_reproducible_machine_value",
+    "mechanicalAdvantageConversion": false,
+    "preMultiplyStoredLoad": false,
+    "derivedMultiplierOnly": true,
+    "bandFakeKgConversion": false,
+    "bodyweightFakeKgConversion": false
+  }
+}
