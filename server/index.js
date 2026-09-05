@@ -1,7 +1,8 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
-import admin from 'firebase-admin';
+import { cert, getApps, initializeApp } from 'firebase-admin/app';
+import { getAuth } from 'firebase-admin/auth';
 
 // The local Gemini secret lives beside this server file, outside source control.
 dotenv.config({ path: new URL('.env', import.meta.url) });
@@ -14,7 +15,7 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
 if (serviceAccountJson) {
-  admin.initializeApp({ credential: admin.credential.cert(JSON.parse(serviceAccountJson)) });
+  initializeApp({ credential: cert(JSON.parse(serviceAccountJson)) });
 } else {
   console.warn('Firebase Admin is not configured; authenticated analysis is unavailable.');
 }
@@ -24,11 +25,11 @@ app.get('/health', (_req, res) => {
 });
 
 async function requireFirebaseUser(req, res, next) {
-  if (!admin.apps.length) return res.status(503).json({ error: 'AI server authentication is not configured.' });
+  if (!getApps().length) return res.status(503).json({ error: 'AI server authentication is not configured.' });
   const token = req.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
   if (!token) return res.status(401).json({ error: '로그인이 필요합니다.' });
   try {
-    req.firebaseUser = await admin.auth().verifyIdToken(token);
+    req.firebaseUser = await getAuth().verifyIdToken(token);
     next();
   } catch {
     res.status(401).json({ error: '로그인 인증이 만료되었거나 유효하지 않습니다.' });
