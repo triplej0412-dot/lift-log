@@ -2,6 +2,7 @@ package com.liftlog.app
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
 import android.widget.Toast
@@ -11,6 +12,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -25,9 +29,12 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
@@ -193,21 +200,33 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 
 @Composable private fun BodySelector(selected: String, select: (String) -> Unit) {
     val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
+    val context = LocalContext.current
+    val bodyMap = remember { BitmapFactory.decodeStream(context.assets.open("body-map-segmented-v3.png")).asImageBitmap() }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
-        // The Android artwork is intentionally represented as selectable regions, so every visible region is tappable.
-        Surface(shape = RoundedCornerShape(24.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().height(230.dp)) {
-            Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
-                Text("전면 · 후면 신체 지도", fontWeight = FontWeight.Bold)
-                Text("선택: $selected", color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(18.dp))
-                groups.chunked(3).forEach { row ->
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        row.forEach { item -> FilterChip(selected = selected == item, onClick = { select(item) }, label = { Text(item) }, modifier = Modifier.weight(1f)) }
-                    }
-                    Spacer(Modifier.height(8.dp))
-                }
-            }
+        Text("신체 부위를 직접 누르거나 아래 버튼을 선택하세요.")
+        Box(Modifier.fillMaxWidth().aspectRatio(bodyMap.width.toFloat() / bodyMap.height).padding(vertical = 8.dp)
+            .pointerInput(Unit) { detectTapGestures { point -> select(bodyPartAt(point.x / size.width, point.y / size.height)) } }) {
+            Image(bodyMap, contentDescription = "운동 부위 선택 신체 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
         }
+        Text("선택: $selected", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+        groups.chunked(3).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                row.forEach { item -> FilterChip(selected = selected == item, onClick = { select(item) }, label = { Text(item) }, modifier = Modifier.weight(1f)) }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+private fun bodyPartAt(x: Float, y: Float): String {
+    val front = x < 0.5f
+    val localX = if (front) x / 0.5f else (x - 0.5f) / 0.5f
+    if (localX < 0.18f || localX > 0.82f) return if (y < 0.42f) "어깨" else "팔"
+    return when {
+        y < 0.28f -> "어깨"
+        front && y < 0.46f -> "가슴"
+        !front && y < 0.60f -> "등"
+        y < 0.63f -> "복부"
+        else -> "하체"
     }
 }
 
@@ -223,11 +242,12 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         text = { Text("이 운동기록을 삭제하시겠습니까?") }, confirmButton = { TextButton(onClick = { remove(deleting!!.id); deleting = null }) { Text("삭제") } },
         dismissButton = { TextButton(onClick = { deleting = null }) { Text("취소") } })
     Column(Modifier.fillMaxSize().padding(20.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        Column(Modifier.fillMaxWidth()) {
             Text("WORKOUT LOG", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-            Row {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
                 TextButton(onClick = export, enabled = records.isNotEmpty()) { Text("내보내기") }
-                FilledTonalButton(onClick = { edit(WorkoutRecord(date = today(), exercises = emptyList())) }) { Icon(Icons.Default.Add, null); Text(" 기록") }
+                Spacer(Modifier.width(8.dp))
+                FilledTonalButton(onClick = { edit(WorkoutRecord(date = today(), exercises = emptyList())) }, modifier = Modifier.widthIn(min = 92.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(4.dp)); Text("기록", softWrap = false) }
             }
         }
         LazyColumn(contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -235,7 +255,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                 ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(record.date, fontWeight = FontWeight.Bold)
-                        Text(record.exercises.joinToString { it.preset.nameKo }.ifBlank { "운동 없음" }, maxLines = 1)
+                        Text(record.exercises.map { it.preset.nameKo }.distinct().joinToString(" · ").ifBlank { "운동 이름 없음" }, maxLines = 2)
                     }
                     IconButton(onClick = { edit(record) }) { Icon(Icons.Default.Edit, "수정") }
                     IconButton(onClick = { deleting = record }) { Icon(Icons.Default.Delete, "삭제") }
@@ -341,7 +361,9 @@ private fun loadStateLabel(state: String) = when (state) {
             Button(onClick = { scope.launch { analyzing = true; result = requestAnalysis(context, records, true); analyzing = false } }, enabled = records.isNotEmpty() && !analyzing) { Text("누적 기록 분석") }
         }
         if (analyzing) LinearProgressIndicator(Modifier.fillMaxWidth())
-        ElevatedCard { Text(result, Modifier.padding(18.dp)) }
+        ElevatedCard(Modifier.fillMaxWidth().weight(1f)) {
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) { Text(result) }
+        }
     }
 }
 
@@ -400,7 +422,12 @@ private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecor
             "profile" to profile,
             "cumulativeSummary" to mapOf("workoutCount" to history.size, "from" to records.last().date, "to" to records.first().date),
             "workoutHistory" to history
-        ) else mapOf("profile" to profile, "latestWorkout" to history.first())
+        ) else mapOf(
+            "profile" to profile,
+            "latestWorkout" to history.first(),
+            "cumulativeSummary" to mapOf("workoutCount" to history.size, "from" to records.last().date, "to" to records.first().date),
+            "workoutHistory" to history
+        )
         val payload = JSONObject(mapOf("analysisMode" to if (cumulative) "cumulative" else "latest", "workoutData" to workoutData)).toString()
         val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/analyze")
             .header("Authorization", "Bearer $idToken")
@@ -409,7 +436,7 @@ private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecor
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) return@withContext "분석 서버 오류 (${response.code}): ${JSONObject(text).optString("error", text)}"
             val json = JSONObject(text)
-            listOf("총평" to json.optString("summary"), "잘한 점" to json.optString("good"), "개선할 점" to json.optString("bad")).joinToString("\n\n") { "${it.first}\n${it.second}" }
+            listOf("총평" to json.optString("summary"), "잘한 점" to json.optString("good"), "개선할 점" to json.optString("bad"), "다음 운동 추천" to json.optString("nextFocus")).filter { it.second.isNotBlank() }.joinToString("\n\n") { "${it.first}\n${it.second}" }
         }
     } catch (error: Exception) { "AI 분석 연결 실패: ${error.message ?: error.javaClass.simpleName}" }
 }

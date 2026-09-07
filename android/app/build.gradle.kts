@@ -7,8 +7,7 @@ android {
     }
     defaultConfig {
         applicationId = "com.liftlog.app"; minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "1.0"
-        // Temporary private-LAN development endpoint. Replace with an HTTPS endpoint before release.
-        buildConfigField("String", "ANALYSIS_BASE_URL", "\"http://192.168.219.106:5000\"")
+        buildConfigField("String", "ANALYSIS_BASE_URL", "\"https://liftlog-ai-api.onrender.com\"")
     }
     buildFeatures { compose = true; buildConfig = true }
     kotlinOptions { jvmTarget = "17" }
