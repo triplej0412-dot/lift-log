@@ -13,6 +13,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -34,6 +35,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -333,11 +336,11 @@ private fun bodyPartAt(x: Float, y: Float): String {
                     val needsReps = recordType !in setOf("time", "weight_time")
                     val needsTime = recordType in setOf("time", "weight_time")
                     if (needsLoad) {
-                        OutlinedTextField(set.inputLoadValue, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadValue = value) else it })) }, label = { Text("중량") }, modifier = Modifier.weight(1f))
+                        OutlinedTextField(set.inputLoadValue, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadValue = value) else it })) }, label = { Text("중량") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next), modifier = Modifier.weight(1f))
                         Spacer(Modifier.width(6.dp)); UnitSelector(set.inputLoadUnit) { unit -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadUnit = unit) else it })) }; Spacer(Modifier.width(6.dp))
                     }
-                    if (needsReps) OutlinedTextField(set.reps, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(reps = value) else it })) }, label = { Text("REPS") }, modifier = Modifier.weight(1f))
-                    if (needsTime) OutlinedTextField(set.durationSeconds, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(durationSeconds = value) else it })) }, label = { Text("초") }, modifier = Modifier.weight(1f))
+                    if (needsReps) OutlinedTextField(set.reps, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(reps = value) else it })) }, label = { Text("REPS") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next), modifier = Modifier.weight(1f))
+                    if (needsTime) OutlinedTextField(set.durationSeconds, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(durationSeconds = value) else it })) }, label = { Text("초") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next), modifier = Modifier.weight(1f))
                 }
             }
         }
