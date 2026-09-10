@@ -119,17 +119,21 @@ app.get('/api/exercise-media', requireFirebaseUser, async (req, res) => {
   const cached = workoutxLookupCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return res.json(cached.value);
   try {
-    const upstream = await fetch(`https://api.workoutxapp.com/v1/exercises?name=${encodeURIComponent(name)}&limit=10`, {
+    // WorkoutX name search is a path endpoint. The older query-string form simply
+    // returned an unrelated first page, so valid catalog exercises appeared to have no GIF.
+    const upstream = await fetch(`https://api.workoutxapp.com/v1/exercises/name/${encodeURIComponent(name)}?limit=10`, {
       headers: { 'X-WorkoutX-Key': WORKOUTX_API_KEY }
     });
     if (!upstream.ok) return res.status(502).json({ error: `WorkoutX 조회 실패 (${upstream.status})` });
     const items = await upstream.json();
     const candidate = Array.isArray(items) ? [...items].sort((a, b) => workoutxCandidateScore(name, equipment, b) - workoutxCandidateScore(name, equipment, a))[0] : null;
     if (!candidate?.id || !candidate?.gifUrl) return res.status(404).json({ error: 'GIF가 있는 운동을 찾지 못했습니다.' });
+    const gifUrl = String(candidate.gifUrl || '');
+    if (!gifUrl) return res.status(404).json({ error: 'GIF가 있는 운동을 찾지 못했습니다.' });
     const value = {
       id: candidate.id,
       name: candidate.name,
-      gifPath: `/api/exercise-gif/${encodeURIComponent(candidate.id)}`,
+      gifPath: `/api/exercise-gif/${encodeURIComponent(candidate.id)}?source=${encodeURIComponent(gifUrl)}`,
       matchedExactly: normalizeExerciseName(name) === normalizeExerciseName(candidate.name)
     };
     workoutxLookupCache.set(cacheKey, { value, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
@@ -145,7 +149,14 @@ app.get('/api/exercise-gif/:id', requireFirebaseUser, async (req, res) => {
   const id = String(req.params.id || '');
   if (!/^[A-Za-z0-9_-]+$/.test(id)) return res.status(400).send('잘못된 운동 ID입니다.');
   try {
-    const upstream = await fetch(`https://api.workoutxapp.com/v1/gifs/${encodeURIComponent(id)}.gif`, {
+    const suppliedUrl = String(req.query.source || '');
+    const source = new URL(suppliedUrl || `https://api.workoutxapp.com/v1/gifs/${encodeURIComponent(id)}`);
+    // Only proxy GIFs served by WorkoutX. This keeps the authenticated proxy from
+    // becoming an open server-side request endpoint.
+    if (!['api.workoutxapp.com', 'cdn.workoutxapp.com'].includes(source.hostname) || source.protocol !== 'https:') {
+      return res.status(400).send('허용되지 않은 GIF 주소입니다.');
+    }
+    const upstream = await fetch(source, {
       headers: { 'X-WorkoutX-Key': WORKOUTX_API_KEY }
     });
     if (!upstream.ok) return res.status(502).send(`WorkoutX GIF 조회 실패 (${upstream.status})`);

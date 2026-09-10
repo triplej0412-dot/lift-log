@@ -274,36 +274,56 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 }
 
 @Composable private fun ExerciseGuide(catalog: List<ExercisePreset>, contents: Map<String, ExerciseContent>) {
-    var group by rememberSaveable { mutableStateOf("가슴") }
+    var selectedGroup by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedPresetId by rememberSaveable { mutableStateOf<String?>(null) }
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    val scope = rememberCoroutineScope()
-    val selectGroup: (String) -> Unit = { nextGroup ->
-        group = nextGroup
-        // A tap on the body map should do more than change its color: reveal the matching exercises.
-        scope.launch { listState.animateScrollToItem(3) }
-    }
     val selectedPreset = selectedPresetId?.let { id -> catalog.firstOrNull { it.presetId == id } }
     if (selectedPreset != null) {
         BackHandler { selectedPresetId = null }
         ExerciseDetail(selectedPreset, contents[selectedPreset.presetId], onBack = { selectedPresetId = null })
         return
     }
-    LazyColumn(
-        state = listState,
-        modifier = Modifier.fillMaxSize(),
-        contentPadding = PaddingValues(20.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        item { Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black) }
-        item { Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동을 봅니다.") }
-        item { BodySelector(group, selectGroup) }
-        item { Text("$group 운동", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
-        items(catalog.filter { koreanPart(it.defaultUiPart) == group }, key = { it.presetId }) { preset ->
-            ListItem(headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
-                supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) },
-                modifier = Modifier.clickable { selectedPresetId = preset.presetId })
-            HorizontalDivider()
+    val group = selectedGroup
+    if (group != null) {
+        BackHandler { selectedGroup = null }
+        ExerciseGroupList(
+            group = group,
+            catalog = catalog,
+            contents = contents,
+            onBack = { selectedGroup = null },
+            onPresetSelected = { selectedPresetId = it }
+        )
+        return
+    }
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+        Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동 목록으로 이동합니다.")
+        BodySelector("가슴") { selectedGroup = it }
+    }
+}
+
+@Composable private fun ExerciseGroupList(
+    group: String,
+    catalog: List<ExercisePreset>,
+    contents: Map<String, ExerciseContent>,
+    onBack: () -> Unit,
+    onPresetSelected: (String) -> Unit
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("← 운동 설명") }
+            Spacer(Modifier.width(12.dp))
+            Text("$group 운동", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+        }
+        Text("운동을 누르면 수행 방법과 동작 GIF를 확인할 수 있습니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyColumn(contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(catalog.filter { koreanPart(it.defaultUiPart) == group }, key = { it.presetId }) { preset ->
+                ElevatedCard(Modifier.fillMaxWidth().clickable { onPresetSelected(preset.presetId) }) {
+                    ListItem(
+                        headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
+                        supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) }
+                    )
+                }
+            }
         }
     }
 }
@@ -333,6 +353,11 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     Text("주요: ${detail.primaryMuscles.filter { it.isNotBlank() }.joinToString(" · ").ifBlank { koreanPart(preset.defaultUiPart) }}")
                     if (detail.secondaryMuscles.isNotEmpty()) Text("보조: ${detail.secondaryMuscles.joinToString(" · ")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("장비: ${detail.equipment}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    MuscleActivationMap(
+                        primaryMuscles = detail.primaryMuscles,
+                        secondaryMuscles = detail.secondaryMuscles,
+                        fallbackGroup = koreanPart(preset.defaultUiPart)
+                    )
                 }
             }
         }
@@ -476,6 +501,72 @@ private fun bodyPartAt(x: Float, y: Float): String {
     ) { recordToEdit ->
         if (recordToEdit != null) WorkoutEditor(catalog, recordToEdit, { onSave(it); editing = null }, { editing = null })
         else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
+    }
+}
+
+@Composable private fun MuscleActivationMap(
+    primaryMuscles: List<String>,
+    secondaryMuscles: List<String>,
+    fallbackGroup: String
+) {
+    val context = LocalContext.current
+    val muscleMap = remember { BitmapFactory.decodeStream(context.assets.open("muscle-activation-map-v1.png")).asImageBitmap() }
+    val primary = muscleRegionsFor(primaryMuscles, fallbackGroup)
+    val secondary = muscleRegionsFor(secondaryMuscles, "") - primary
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("자극 지도", fontWeight = FontWeight.Bold)
+        Box(Modifier.fillMaxWidth().heightIn(max = 360.dp).aspectRatio(muscleMap.width.toFloat() / muscleMap.height), contentAlignment = Alignment.Center) {
+            Image(muscleMap, contentDescription = "자극 부위 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            Canvas(Modifier.fillMaxSize()) { drawActivationOverlays(primary, secondary) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("● 주요 자극", color = Lime, style = MaterialTheme.typography.labelSmall)
+            Text("● 보조 자극", color = Lime.copy(alpha = .55f), style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+private fun muscleRegionsFor(muscles: List<String>, fallbackGroup: String): Set<String> {
+    val text = (muscles + fallbackGroup).joinToString(" ")
+    return buildSet {
+        if (text.contains("가슴")) add("chest")
+        if (text.contains("어깨") || text.contains("삼각근")) add("shoulder")
+        if (text.contains("이두") || text.contains("삼두") || text.contains("전완") || text.contains("팔")) add("arms")
+        if (text.contains("복부") || text.contains("복직") || text.contains("코어") || text.contains("외복")) add("abs")
+        if (text.contains("대퇴") || text.contains("햄스트링") || text.contains("사두") || text.contains("둔근") || text.contains("하체")) add("thighs")
+        if (text.contains("종아리")) add("calves")
+        if (text.contains("등") || text.contains("광배") || text.contains("승모")) add("back")
+    }
+}
+
+private fun DrawScope.drawActivationOverlays(primary: Set<String>, secondary: Set<String>) {
+    val shapes = mapOf(
+        "chest" to listOf(floatArrayOf(.31f,.19f,.47f,.18f,.49f,.28f,.34f,.29f), floatArrayOf(.51f,.18f,.68f,.19f,.66f,.29f,.51f,.28f)),
+        "shoulder" to listOf(floatArrayOf(.22f,.18f,.34f,.16f,.35f,.25f,.25f,.27f), floatArrayOf(.66f,.16f,.78f,.18f,.75f,.27f,.65f,.25f)),
+        "arms" to listOf(floatArrayOf(.22f,.27f,.32f,.27f,.29f,.49f,.19f,.48f), floatArrayOf(.68f,.27f,.78f,.27f,.81f,.48f,.71f,.49f)),
+        "abs" to listOf(floatArrayOf(.39f,.29f,.61f,.29f,.60f,.52f,.40f,.52f)),
+        "thighs" to listOf(floatArrayOf(.32f,.52f,.48f,.53f,.47f,.77f,.32f,.76f), floatArrayOf(.52f,.53f,.68f,.52f,.68f,.76f,.53f,.77f)),
+        "calves" to listOf(floatArrayOf(.33f,.77f,.47f,.77f,.45f,.94f,.34f,.94f), floatArrayOf(.53f,.77f,.67f,.77f,.66f,.94f,.55f,.94f)),
+        // This is a front-view reference. Back-focused movements retain their text labels;
+        // shoulders and arms still light up where they are secondary movers.
+        "back" to emptyList()
+    )
+    shapes.forEach { (region, polygons) ->
+        val color = when {
+            region in primary -> Lime.copy(alpha = .55f)
+            region in secondary -> Lime.copy(alpha = .28f)
+            else -> null
+        } ?: return@forEach
+        polygons.forEach { points ->
+            val path = Path().apply {
+                moveTo(points[0] * size.width, points[1] * size.height)
+                var index = 2
+                while (index < points.size) { lineTo(points[index] * size.width, points[index + 1] * size.height); index += 2 }
+                close()
+            }
+            drawPath(path, color)
+            drawPath(path, Lime.copy(alpha = color.alpha.coerceAtLeast(.5f)), style = Stroke(width = 1.5f * density))
+        }
     }
 }
 
