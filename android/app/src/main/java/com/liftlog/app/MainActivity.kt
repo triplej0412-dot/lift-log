@@ -292,6 +292,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val scope = rememberCoroutineScope()
     var mediaUrl by remember(preset.presetId) { mutableStateOf<String?>(null) }
     var mediaMatchedName by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaMatchedExactly by remember(preset.presetId) { mutableStateOf(true) }
     var mediaAuthToken by remember(preset.presetId) { mutableStateOf<String?>(null) }
     var mediaError by remember(preset.presetId) { mutableStateOf<String?>(null) }
     var mediaLoading by remember(preset.presetId) { mutableStateOf(false) }
@@ -322,7 +323,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                             mediaLoading = true; mediaError = null
                             scope.launch {
                                 runCatching { requestExerciseMedia(preset) }.onSuccess { media ->
-                                    mediaUrl = media.url; mediaMatchedName = media.name; mediaAuthToken = media.authToken
+                                    mediaUrl = media.url; mediaMatchedName = media.name; mediaMatchedExactly = media.matchedExactly; mediaAuthToken = media.authToken
                                 }.onFailure { error -> mediaError = error.message ?: "GIF를 불러오지 못했습니다." }
                                 mediaLoading = false
                             }
@@ -332,6 +333,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                             .addHeader("Authorization", "Bearer ${mediaAuthToken.orEmpty()}").build()
                         AsyncImage(model = request, contentDescription = "$name 동작 GIF", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp))
                         mediaMatchedName?.let { matched -> Text("WorkoutX 매칭: $matched", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        if (!mediaMatchedExactly) Text("이름 기준 유사 동작일 수 있으니 장비·그립·각도를 확인하세요.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                     }
                     mediaError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 }
@@ -620,7 +622,7 @@ private val analysisClient = OkHttpClient.Builder()
     .readTimeout(180, TimeUnit.SECONDS)
     .callTimeout(190, TimeUnit.SECONDS)
     .build()
-private data class ExerciseMedia(val url: String, val name: String, val authToken: String)
+private data class ExerciseMedia(val url: String, val name: String, val matchedExactly: Boolean, val authToken: String)
 private suspend fun requestExerciseMedia(preset: ExercisePreset): ExerciseMedia = withContext(Dispatchers.IO) {
     val token = FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
         ?: error("GIF를 보려면 Google 로그인이 필요합니다.")
@@ -634,7 +636,7 @@ private suspend fun requestExerciseMedia(preset: ExercisePreset): ExerciseMedia 
         val json = JSONObject(body)
         val gifPath = json.optString("gifPath")
         if (gifPath.isBlank()) error("GIF 주소가 없습니다.")
-        ExerciseMedia("${BuildConfig.ANALYSIS_BASE_URL}$gifPath", json.optString("name", preset.nameEn), token)
+        ExerciseMedia("${BuildConfig.ANALYSIS_BASE_URL}$gifPath", json.optString("name", preset.nameEn), json.optBoolean("matchedExactly", false), token)
     }
 }
 private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecord>, cumulative: Boolean): String = withContext(Dispatchers.IO) {
