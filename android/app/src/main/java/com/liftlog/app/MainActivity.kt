@@ -464,14 +464,17 @@ private fun bodyPartAt(x: Float, y: Float): String {
     }
     BackHandler(enabled = editing != null) { editing = null }
     AnimatedContent(
-        targetState = editing != null,
+        // Keep the outgoing record as AnimatedContent's target state.  The previous
+        // implementation looked up `editing!!` again while the exit animation ran;
+        // pressing Back had already set it to null and crashed the app.
+        targetState = editing,
         transitionSpec = {
             (fadeIn() + slideInHorizontally { it / 5 }) togetherWith
                 (fadeOut() + slideOutHorizontally { -it / 5 })
         },
         label = "workoutRecordTransition"
-    ) { isEditing ->
-        if (isEditing) WorkoutEditor(catalog, editing!!, { onSave(it); editing = null }, { editing = null })
+    ) { recordToEdit ->
+        if (recordToEdit != null) WorkoutEditor(catalog, recordToEdit, { onSave(it); editing = null }, { editing = null })
         else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
     }
 }
