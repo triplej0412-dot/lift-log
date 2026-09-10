@@ -10,6 +10,13 @@ import org.json.JSONObject
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -173,6 +180,9 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val scheme = if (darkMode) darkColorScheme(background = Dark, surface = Color(0xFF242526), primary = Lime)
         else lightColorScheme(primary = Color(0xFF5E9F00))
     MaterialTheme(colorScheme = scheme) {
+        // Child screens (exercise detail and record editor) register their own handler first.
+        // From a tab's root, the system back button returns to Home instead of closing the app.
+        BackHandler(enabled = selectedTab != 0) { selectedTab = 0 }
         Scaffold(
             bottomBar = {
                 NavigationBar {
@@ -266,26 +276,34 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 @Composable private fun ExerciseGuide(catalog: List<ExercisePreset>, contents: Map<String, ExerciseContent>) {
     var group by rememberSaveable { mutableStateOf("가슴") }
     var selectedPresetId by rememberSaveable { mutableStateOf<String?>(null) }
-    val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val scope = rememberCoroutineScope()
+    val selectGroup: (String) -> Unit = { nextGroup ->
+        group = nextGroup
+        // A tap on the body map should do more than change its color: reveal the matching exercises.
+        scope.launch { listState.animateScrollToItem(3) }
+    }
     val selectedPreset = selectedPresetId?.let { id -> catalog.firstOrNull { it.presetId == id } }
     if (selectedPreset != null) {
+        BackHandler { selectedPresetId = null }
         ExerciseDetail(selectedPreset, contents[selectedPreset.presetId], onBack = { selectedPresetId = null })
         return
     }
-    Column(Modifier.fillMaxSize().padding(20.dp)) {
-        Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-        Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동을 봅니다.")
-        Spacer(Modifier.height(18.dp))
-        BodySelector(group, { group = it })
-        Spacer(Modifier.height(12.dp))
-        Text("$group 운동", fontWeight = FontWeight.Bold)
-        LazyColumn {
-            items(catalog.filter { koreanPart(it.defaultUiPart) == group }) { preset ->
-                ListItem(headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
-                    supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) },
-                    modifier = Modifier.clickable { selectedPresetId = preset.presetId })
-                HorizontalDivider()
-            }
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(20.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item { Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black) }
+        item { Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동을 봅니다.") }
+        item { BodySelector(group, selectGroup) }
+        item { Text("$group 운동", fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 8.dp)) }
+        items(catalog.filter { koreanPart(it.defaultUiPart) == group }, key = { it.presetId }) { preset ->
+            ListItem(headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
+                supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) },
+                modifier = Modifier.clickable { selectedPresetId = preset.presetId })
+            HorizontalDivider()
         }
     }
 }
@@ -444,8 +462,18 @@ private fun bodyPartAt(x: Float, y: Float): String {
             onStartConsumed()
         }
     }
-    if (editing != null) WorkoutEditor(catalog, editing!!, { onSave(it); editing = null }, { editing = null })
-    else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
+    BackHandler(enabled = editing != null) { editing = null }
+    AnimatedContent(
+        targetState = editing != null,
+        transitionSpec = {
+            (fadeIn() + slideInHorizontally { it / 5 }) togetherWith
+                (fadeOut() + slideOutHorizontally { -it / 5 })
+        },
+        label = "workoutRecordTransition"
+    ) { isEditing ->
+        if (isEditing) WorkoutEditor(catalog, editing!!, { onSave(it); editing = null }, { editing = null })
+        else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
+    }
 }
 
 @Composable private fun WorkoutHistory(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, edit: (WorkoutRecord) -> Unit, remove: (String) -> Unit, export: () -> Unit) {
