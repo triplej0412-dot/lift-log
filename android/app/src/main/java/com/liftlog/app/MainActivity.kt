@@ -133,6 +133,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val appContext = LocalContext.current
     val appPrefs = remember { appContext.getSharedPreferences("liftlog", Context.MODE_PRIVATE) }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var startNewWorkout by rememberSaveable { mutableStateOf(false) }
     var darkMode by rememberSaveable { mutableStateOf(appPrefs.getBoolean("darkMode", true)) }
     var records by remember { mutableStateOf(emptyList<WorkoutRecord>()) }
     var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
@@ -168,9 +169,9 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (selectedTab) {
-                    0 -> HomeScreen(records, onStart = { selectedTab = 2 }, onHistory = { selectedTab = 2 })
+                    0 -> HomeScreen(records, onStart = { startNewWorkout = true; selectedTab = 2 }, onHistory = { selectedTab = 2 })
                     1 -> ExerciseGuide(catalog)
-                    2 -> WorkoutScreen(catalog, records, onSave = { record ->
+                    2 -> WorkoutScreen(catalog, records, startNew = startNewWorkout, onStartConsumed = { startNewWorkout = false }, onSave = { record ->
                         if (user != null) saveWorkout(record)
                     }, onDelete = { id ->
                         records = records.filterNot { it.id == id }; deleteWorkout(id)
@@ -298,8 +299,14 @@ private fun bodyPartAt(x: Float, y: Float): String {
     }
 }
 
-@Composable private fun WorkoutScreen(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, onSave: (WorkoutRecord) -> Unit, onDelete: (String) -> Unit, onExport: () -> Unit) {
+@Composable private fun WorkoutScreen(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, startNew: Boolean, onStartConsumed: () -> Unit, onSave: (WorkoutRecord) -> Unit, onDelete: (String) -> Unit, onExport: () -> Unit) {
     var editing by remember { mutableStateOf<WorkoutRecord?>(null) }
+    LaunchedEffect(startNew) {
+        if (startNew) {
+            editing = WorkoutRecord(date = today(), exercises = emptyList())
+            onStartConsumed()
+        }
+    }
     if (editing != null) WorkoutEditor(catalog, editing!!, { onSave(it); editing = null }, { editing = null })
     else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
 }
