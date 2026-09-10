@@ -440,14 +440,14 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 @Composable private fun BodySelector(selected: String, select: (String) -> Unit) {
     val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
     val context = LocalContext.current
-    val bodyMap = remember { BitmapFactory.decodeStream(context.assets.open("body-map-segmented-v3.png")).asImageBitmap() }
+    val bodyMap = remember { BitmapFactory.decodeStream(context.assets.open("body-map-muscle-groups-v4.png")).asImageBitmap() }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("신체 부위를 직접 누르거나 아래 버튼을 선택하세요.")
         Box(Modifier.fillMaxWidth().aspectRatio(bodyMap.width.toFloat() / bodyMap.height).padding(vertical = 8.dp)) {
             Image(bodyMap, contentDescription = "운동 부위 선택 신체 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             Canvas(Modifier.fillMaxSize().pointerInput(selected) {
                 detectTapGestures { point -> select(bodyPartAt(point.x / size.width, point.y / size.height)) }
-            }) { drawBodyOverlays(selected) }
+            }) { drawBodySelection(selected) }
         }
         Text("선택: $selected", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         groups.chunked(3).forEach { row ->
@@ -458,35 +458,60 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         }
     }
 }
-private fun DrawScope.drawBodyOverlays(selected: String) {
+private fun DrawScope.drawBodySelection(selected: String) {
     val regions = mapOf(
-        "가슴" to listOf(floatArrayOf(.14f,.24f, .22f,.21f, .27f,.23f, .27f,.34f, .21f,.37f, .15f,.34f), floatArrayOf(.28f,.23f, .34f,.21f, .42f,.24f, .41f,.34f, .35f,.37f, .28f,.34f)),
-        "등" to listOf(floatArrayOf(.62f,.23f, .74f,.18f, .86f,.23f, .82f,.42f, .75f,.47f, .66f,.42f)),
-        "복부" to listOf(floatArrayOf(.22f,.35f, .34f,.35f, .35f,.49f, .23f,.49f)),
-        "어깨" to listOf(floatArrayOf(.08f,.23f, .16f,.19f, .22f,.21f, .15f,.30f, .08f,.31f), floatArrayOf(.34f,.21f, .42f,.19f, .48f,.24f, .42f,.31f, .35f,.30f), floatArrayOf(.59f,.23f, .65f,.19f, .71f,.22f, .65f,.31f, .59f,.30f), floatArrayOf(.83f,.22f, .89f,.19f, .96f,.24f, .91f,.31f, .84f,.30f)),
-        "팔" to listOf(floatArrayOf(.05f,.31f, .14f,.29f, .17f,.46f, .10f,.58f, .04f,.51f), floatArrayOf(.42f,.29f, .49f,.31f, .50f,.51f, .44f,.58f, .38f,.46f), floatArrayOf(.53f,.31f, .60f,.29f, .62f,.46f, .56f,.58f, .50f,.51f), floatArrayOf(.87f,.29f, .96f,.31f, .97f,.51f, .91f,.58f, .84f,.46f)),
-        "하체" to listOf(floatArrayOf(.13f,.51f, .25f,.49f, .28f,.88f, .12f,.88f), floatArrayOf(.29f,.49f, .40f,.51f, .42f,.88f, .27f,.88f), floatArrayOf(.61f,.51f, .74f,.49f, .74f,.88f, .59f,.88f), floatArrayOf(.76f,.49f, .88f,.51f, .90f,.88f, .75f,.88f))
+        // The zones sit within the corresponding muscle contours in the illustration.
+        // No border is drawn: the artwork's own dark anatomy lines remain the boundary.
+        "가슴" to listOf(
+            floatArrayOf(.135f,.215f, .185f,.195f, .245f,.205f, .252f,.252f, .220f,.282f, .162f,.274f, .135f,.245f),
+            floatArrayOf(.255f,.205f, .315f,.195f, .365f,.215f, .365f,.245f, .338f,.274f, .280f,.282f, .248f,.252f)
+        ),
+        "등" to listOf(
+            floatArrayOf(.625f,.185f, .700f,.155f, .750f,.185f, .750f,.395f, .705f,.445f, .650f,.395f),
+            floatArrayOf(.755f,.185f, .805f,.155f, .880f,.185f, .855f,.395f, .805f,.445f, .755f,.395f)
+        ),
+        "복부" to listOf(
+            floatArrayOf(.180f,.285f, .245f,.285f, .252f,.445f, .205f,.470f, .172f,.435f),
+            floatArrayOf(.255f,.285f, .320f,.285f, .328f,.435f, .295f,.470f, .248f,.445f)
+        ),
+        "어깨" to listOf(
+            floatArrayOf(.080f,.190f, .132f,.160f, .180f,.185f, .145f,.235f, .092f,.252f),
+            floatArrayOf(.320f,.185f, .368f,.160f, .420f,.190f, .408f,.252f, .355f,.235f),
+            floatArrayOf(.570f,.190f, .620f,.160f, .675f,.185f, .640f,.235f, .585f,.252f),
+            floatArrayOf(.825f,.185f, .880f,.160f, .930f,.190f, .915f,.252f, .860f,.235f)
+        ),
+        "팔" to listOf(
+            floatArrayOf(.052f,.260f, .105f,.245f, .140f,.310f, .125f,.505f, .080f,.565f, .048f,.490f),
+            floatArrayOf(.360f,.310f, .395f,.245f, .448f,.260f, .452f,.490f, .420f,.565f, .375f,.505f),
+            floatArrayOf(.548f,.260f, .600f,.245f, .635f,.310f, .625f,.505f, .580f,.565f, .548f,.490f),
+            floatArrayOf(.865f,.310f, .900f,.245f, .952f,.260f, .952f,.490f, .920f,.565f, .875f,.505f)
+        ),
+        "하체" to listOf(
+            floatArrayOf(.150f,.475f, .240f,.465f, .252f,.800f, .205f,.900f, .135f,.835f),
+            floatArrayOf(.260f,.465f, .350f,.475f, .365f,.835f, .295f,.900f, .248f,.800f),
+            floatArrayOf(.650f,.475f, .745f,.465f, .752f,.800f, .705f,.900f, .635f,.835f),
+            floatArrayOf(.755f,.465f, .850f,.475f, .865f,.835f, .795f,.900f, .748f,.800f)
+        )
     )
-    regions.forEach { (part, polygons) -> polygons.forEach { points ->
+    regions[selected].orEmpty().forEach { points ->
         val path = Path().apply {
             moveTo(points[0] * size.width, points[1] * size.height)
             var index = 2
             while (index < points.size) { lineTo(points[index] * size.width, points[index + 1] * size.height); index += 2 }
             close()
         }
-        if (part == selected) drawPath(path, Lime.copy(alpha = .62f))
-        drawPath(path, if (part == selected) Lime else Color.White.copy(alpha = .22f), style = Stroke(width = 2f * density))
-    } }
+        drawPath(path, Lime.copy(alpha = .48f))
+    }
 }
 private fun bodyPartAt(x: Float, y: Float): String {
     val front = x < 0.5f
     val localX = if (front) x / 0.5f else (x - 0.5f) / 0.5f
-    if (localX < 0.18f || localX > 0.82f) return if (y < 0.42f) "어깨" else "팔"
+    if (localX < .13f || localX > .87f) return if (y < .28f) "어깨" else "팔"
     return when {
-        y < 0.28f -> "어깨"
-        front && y < 0.46f -> "가슴"
-        !front && y < 0.60f -> "등"
-        y < 0.63f -> "복부"
+        y < .23f -> "어깨"
+        front && y < .30f -> "가슴"
+        !front && y < .47f -> "등"
+        front && y < .48f -> "복부"
         else -> "하체"
     }
 }
