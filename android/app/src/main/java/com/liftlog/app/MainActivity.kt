@@ -454,14 +454,23 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 @Composable private fun BodySelector(selected: String, select: (String) -> Unit) {
     val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
     val context = LocalContext.current
-    val bodyMap = remember { BitmapFactory.decodeStream(context.assets.open("body-map-muscle-groups-v4.png")).asImageBitmap() }
+    val selectedAsset = when (selected) {
+        "등" -> "body-map-selected-back.png"
+        "어깨" -> "body-map-selected-shoulders.png"
+        "팔" -> "body-map-selected-arms.png"
+        "복부" -> "body-map-selected-abs.png"
+        "하체" -> "body-map-selected-legs.png"
+        else -> "body-map-selected-chest.png"
+    }
+    // Selection is baked into each artwork state so a colored overlay can never
+    // spill over the body silhouette or fight the illustration's anatomy lines.
+    val bodyMap = remember(selectedAsset) { BitmapFactory.decodeStream(context.assets.open(selectedAsset)).asImageBitmap() }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("신체 부위를 직접 누르거나 아래 버튼을 선택하세요.")
         Box(Modifier.fillMaxWidth().aspectRatio(bodyMap.width.toFloat() / bodyMap.height).padding(vertical = 8.dp)) {
-            Image(bodyMap, contentDescription = "운동 부위 선택 신체 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-            Canvas(Modifier.fillMaxSize().pointerInput(selected) {
+            Image(bodyMap, contentDescription = "운동 부위 선택 신체 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().pointerInput(selected) {
                 detectTapGestures { point -> select(bodyPartAt(point.x / size.width, point.y / size.height)) }
-            }) { drawBodySelection(selected) }
+            })
         }
         Text("선택: $selected", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         groups.chunked(3).forEach { row ->
@@ -470,51 +479,6 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
             }
             Spacer(Modifier.height(8.dp))
         }
-    }
-}
-private fun DrawScope.drawBodySelection(selected: String) {
-    val regions = mapOf(
-        // The zones sit within the corresponding muscle contours in the illustration.
-        // No border is drawn: the artwork's own dark anatomy lines remain the boundary.
-        "가슴" to listOf(
-            floatArrayOf(.120f,.200f, .165f,.177f, .235f,.186f, .248f,.245f, .216f,.272f, .150f,.264f, .120f,.238f),
-            floatArrayOf(.252f,.186f, .322f,.177f, .368f,.200f, .368f,.238f, .338f,.264f, .272f,.272f, .248f,.245f)
-        ),
-        "등" to listOf(
-            floatArrayOf(.625f,.185f, .700f,.155f, .750f,.185f, .750f,.395f, .705f,.445f, .650f,.395f),
-            floatArrayOf(.755f,.185f, .805f,.155f, .880f,.185f, .855f,.395f, .805f,.445f, .755f,.395f)
-        ),
-        "복부" to listOf(
-            floatArrayOf(.180f,.285f, .245f,.285f, .252f,.445f, .205f,.470f, .172f,.435f),
-            floatArrayOf(.255f,.285f, .320f,.285f, .328f,.435f, .295f,.470f, .248f,.445f)
-        ),
-        "어깨" to listOf(
-            floatArrayOf(.080f,.190f, .132f,.160f, .180f,.185f, .145f,.235f, .092f,.252f),
-            floatArrayOf(.320f,.185f, .368f,.160f, .420f,.190f, .408f,.252f, .355f,.235f),
-            floatArrayOf(.570f,.190f, .620f,.160f, .675f,.185f, .640f,.235f, .585f,.252f),
-            floatArrayOf(.825f,.185f, .880f,.160f, .930f,.190f, .915f,.252f, .860f,.235f)
-        ),
-        "팔" to listOf(
-            floatArrayOf(.052f,.260f, .105f,.245f, .140f,.310f, .125f,.505f, .080f,.565f, .048f,.490f),
-            floatArrayOf(.360f,.310f, .395f,.245f, .448f,.260f, .452f,.490f, .420f,.565f, .375f,.505f),
-            floatArrayOf(.548f,.260f, .600f,.245f, .635f,.310f, .625f,.505f, .580f,.565f, .548f,.490f),
-            floatArrayOf(.865f,.310f, .900f,.245f, .952f,.260f, .952f,.490f, .920f,.565f, .875f,.505f)
-        ),
-        "하체" to listOf(
-            floatArrayOf(.150f,.475f, .240f,.465f, .252f,.800f, .205f,.900f, .135f,.835f),
-            floatArrayOf(.260f,.465f, .350f,.475f, .365f,.835f, .295f,.900f, .248f,.800f),
-            floatArrayOf(.650f,.475f, .745f,.465f, .752f,.800f, .705f,.900f, .635f,.835f),
-            floatArrayOf(.755f,.465f, .850f,.475f, .865f,.835f, .795f,.900f, .748f,.800f)
-        )
-    )
-    regions[selected].orEmpty().forEach { points ->
-        val path = Path().apply {
-            moveTo(points[0] * size.width, points[1] * size.height)
-            var index = 2
-            while (index < points.size) { lineTo(points[index] * size.width, points[index + 1] * size.height); index += 2 }
-            close()
-        }
-        drawPath(path, Lime.copy(alpha = .48f))
     }
 }
 private fun bodyPartAt(x: Float, y: Float): String {
