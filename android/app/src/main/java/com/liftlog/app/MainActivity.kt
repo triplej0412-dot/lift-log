@@ -57,6 +57,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.time.LocalDate
+import java.time.YearMonth
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -157,7 +159,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         Scaffold(
             bottomBar = {
                 NavigationBar {
-                    listOf("운동 설명", "운동 기록", "AI 분석", "환경설정").forEachIndexed { index, label ->
+                    listOf("홈", "운동 설명", "운동 기록", "AI 분석", "환경설정").forEachIndexed { index, label ->
                         NavigationBarItem(selected = selectedTab == index, onClick = { selectedTab = index },
                             icon = { Text((index + 1).toString()) }, label = { Text(label) })
                     }
@@ -166,13 +168,14 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (selectedTab) {
-                    0 -> ExerciseGuide(catalog)
-                    1 -> WorkoutScreen(catalog, records, onSave = { record ->
+                    0 -> HomeScreen(records, onStart = { selectedTab = 2 }, onHistory = { selectedTab = 2 })
+                    1 -> ExerciseGuide(catalog)
+                    2 -> WorkoutScreen(catalog, records, onSave = { record ->
                         if (user != null) saveWorkout(record)
                     }, onDelete = { id ->
                         records = records.filterNot { it.id == id }; deleteWorkout(id)
                     }, onExport = { onExport(exportPayload(records)) })
-                    2 -> AnalysisScreen(records)
+                    3 -> AnalysisScreen(records)
                     else -> SettingsScreen(darkMode, { enabled ->
                         darkMode = enabled; appPrefs.edit().putBoolean("darkMode", enabled).apply()
                         user?.let { FirebaseFirestore.getInstance().collection("users").document(it.uid).set(mapOf("theme" to if (enabled) "dark" else "light"), SetOptions.merge()) }
@@ -180,6 +183,66 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable private fun HomeScreen(records: List<WorkoutRecord>, onStart: () -> Unit, onHistory: () -> Unit) {
+    val today = LocalDate.now()
+    val month = YearMonth.from(today)
+    val monthRecords = records.filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) }.getOrNull() == month }
+    val activeDates = monthRecords.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.toSet()
+    val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
+    val weeklyCounts = (3 downTo 0).map { offset ->
+        val start = monday.minusWeeks(offset.toLong())
+        records.count { record -> runCatching { LocalDate.parse(record.date) }.getOrNull()?.let { !it.isBefore(start) && !it.isAfter(start.plusDays(6)) } == true }
+    }
+    val calendarCells = List(month.atDay(1).dayOfWeek.value % 7) { null } + (1..month.lengthOfMonth()).toList()
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column {
+            Text("HOME", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+            Text("운동 흐름을 한눈에 확인하세요.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${month.year}년 ${month.monthValue}월", fontWeight = FontWeight.Black)
+                    Text("${monthRecords.size} 세션 · ${activeDates.size}일", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth()) { listOf("일", "월", "화", "수", "목", "금", "토").forEach { day -> Text(day, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                calendarCells.chunked(7).forEach { week ->
+                    Row(Modifier.fillMaxWidth()) {
+                        week.forEach { day ->
+                            val date = day?.let { month.atDay(it) }
+                            Box(Modifier.weight(1f).aspectRatio(1f).padding(2.dp).background(if (date in activeDates) Lime else Color.Transparent, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                                if (day != null) Text(day.toString(), color = if (date in activeDates) Dark else MaterialTheme.colorScheme.onSurface, fontWeight = if (date in activeDates) FontWeight.Black else FontWeight.Normal)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("최근 4주 운동 빈도", fontWeight = FontWeight.Black)
+                weeklyCounts.forEachIndexed { index, count ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(if (index == 3) "이번 주" else "${3 - index}주 전", modifier = Modifier.width(46.dp), style = MaterialTheme.typography.labelMedium)
+                        LinearProgressIndicator(progress = (count.coerceAtMost(7) / 7f), modifier = Modifier.weight(1f), color = Lime, trackColor = MaterialTheme.colorScheme.surfaceVariant)
+                        Text("${count}회", modifier = Modifier.width(28.dp), style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(18.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column { Text("이번 달", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("운동일 ${activeDates.size}일", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black) }
+                Column(horizontalAlignment = Alignment.End) { Text("총 세션 ${monthRecords.size}회", fontWeight = FontWeight.Bold); Text("운동 종목 ${monthRecords.sumOf { it.exercises.size }}개", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        }
+        Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("운동 기록") }
+        OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth()) { Text("전체 운동 기록 보기") }
     }
 }
 
