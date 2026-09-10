@@ -12,7 +12,9 @@ app.use(cors());
 app.use(express.json());
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const WORKOUTX_API_KEY = process.env.WORKOUTX_API_KEY;
 const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+const workoutxLookupCache = new Map();
 
 if (serviceAccountJson) {
   initializeApp({ credential: cert(JSON.parse(serviceAccountJson)) });
@@ -88,6 +90,71 @@ app.post('/api/analyze', requireFirebaseUser, async (req, res) => {
   } catch (error) {
     console.error("❌ 서버 내부 에러:", error.message);
     res.status(500).json({ error: "AI 분석 중 오류가 발생했습니다." });
+  }
+});
+
+function normalizeExerciseName(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, ' ').replace(/\b(with|and|the|a|an)\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function workoutxCandidateScore(targetName, targetEquipment, candidate) {
+  const target = normalizeExerciseName(targetName);
+  const name = normalizeExerciseName(candidate.name);
+  if (target === name) return 100;
+  const targetTokens = new Set(target.split(' '));
+  const candidateTokens = new Set(name.split(' '));
+  const overlap = [...targetTokens].filter((token) => candidateTokens.has(token)).length;
+  let score = overlap / Math.max(targetTokens.size, candidateTokens.size, 1) * 10;
+  if (name.includes(target) || target.includes(name)) score += 5;
+  if (targetEquipment && normalizeExerciseName(candidate.equipment).includes(normalizeExerciseName(targetEquipment))) score += 3;
+  return score;
+}
+
+app.get('/api/exercise-media', requireFirebaseUser, async (req, res) => {
+  const name = String(req.query.name || '').trim();
+  const equipment = String(req.query.equipment || '').trim();
+  if (!WORKOUTX_API_KEY) return res.status(503).json({ error: 'WorkoutX API 키가 서버에 설정되지 않았습니다.' });
+  if (!name) return res.status(400).json({ error: '운동 이름이 필요합니다.' });
+  const cacheKey = `${name}|${equipment}`;
+  const cached = workoutxLookupCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return res.json(cached.value);
+  try {
+    const upstream = await fetch(`https://api.workoutxapp.com/v1/exercises?name=${encodeURIComponent(name)}&limit=10`, {
+      headers: { 'X-WorkoutX-Key': WORKOUTX_API_KEY }
+    });
+    if (!upstream.ok) return res.status(502).json({ error: `WorkoutX 조회 실패 (${upstream.status})` });
+    const items = await upstream.json();
+    const candidate = Array.isArray(items) ? [...items].sort((a, b) => workoutxCandidateScore(name, equipment, b) - workoutxCandidateScore(name, equipment, a))[0] : null;
+    if (!candidate?.id || !candidate?.gifUrl) return res.status(404).json({ error: 'GIF가 있는 운동을 찾지 못했습니다.' });
+    const value = {
+      id: candidate.id,
+      name: candidate.name,
+      gifPath: `/api/exercise-gif/${encodeURIComponent(candidate.id)}`,
+      matchedExactly: normalizeExerciseName(name) === normalizeExerciseName(candidate.name)
+    };
+    workoutxLookupCache.set(cacheKey, { value, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
+    res.json(value);
+  } catch (error) {
+    console.error('WorkoutX lookup failed:', error.message);
+    res.status(502).json({ error: 'WorkoutX 연결에 실패했습니다.' });
+  }
+});
+
+app.get('/api/exercise-gif/:id', requireFirebaseUser, async (req, res) => {
+  if (!WORKOUTX_API_KEY) return res.status(503).send('WorkoutX API 키가 서버에 설정되지 않았습니다.');
+  const id = String(req.params.id || '');
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return res.status(400).send('잘못된 운동 ID입니다.');
+  try {
+    const upstream = await fetch(`https://api.workoutxapp.com/v1/gifs/${encodeURIComponent(id)}.gif`, {
+      headers: { 'X-WorkoutX-Key': WORKOUTX_API_KEY }
+    });
+    if (!upstream.ok) return res.status(502).send(`WorkoutX GIF 조회 실패 (${upstream.status})`);
+    res.set('Content-Type', upstream.headers.get('content-type') || 'image/gif');
+    res.set('Cache-Control', 'private, max-age=604800');
+    res.send(Buffer.from(await upstream.arrayBuffer()));
+  } catch (error) {
+    console.error('WorkoutX GIF fetch failed:', error.message);
+    res.status(502).send('WorkoutX GIF 연결에 실패했습니다.');
   }
 });
 

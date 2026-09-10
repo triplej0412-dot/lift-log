@@ -15,6 +15,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -30,16 +31,22 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
@@ -57,6 +64,9 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.net.URLEncoder
+import java.time.LocalDate
+import java.time.YearMonth
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -66,11 +76,18 @@ private val Lime = Color(0xFF9DFF1A)
 private val Dark = Color(0xFF101112)
 
 @Serializable data class CatalogFile(val formatVersion: Int = 1, val presets: List<ExercisePreset> = emptyList())
+@Serializable data class ExerciseContentFile(val formatVersion: Int = 1, val exercises: List<ExerciseContent> = emptyList())
+@Serializable data class ExerciseContent(
+    val presetId: String = "", val titleKo: String = "", val primaryMuscles: List<String> = emptyList(),
+    val secondaryMuscles: List<String> = emptyList(), val equipment: String = "", val setup: String = "",
+    val steps: List<String> = emptyList(), val keyCue: String = "", val cautions: List<String> = emptyList(),
+    val referenceNotice: String? = null, val source: String = ""
+)
 @Serializable data class ExercisePreset(
     val presetId: String = "", val nameKo: String = "", val nameEn: String = "",
     val defaultUiPart: String = "", val searchAliases: List<String> = emptyList(),
     val canonicalPresetId: String = "", val storageExerciseId: String = "", val familyId: String = "",
-    val canonicalVariantKey: String = "", val visualVariantKey: String? = null,
+    val canonicalVariantKey: String = "", val visualVariantKey: String? = null, val equipmentVariantId: String = "",
     val recordType: String = "weight_reps", val laterality: String = "bilateral", val implementMultiplier: Int = 1,
     val defaultLoadState: String = "external_load", val allowedLoadStates: List<String> = emptyList()
 )
@@ -128,9 +145,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val catalog = loadCatalog()
+    val exerciseContents = loadExerciseContents()
     val appContext = LocalContext.current
     val appPrefs = remember { appContext.getSharedPreferences("liftlog", Context.MODE_PRIVATE) }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
+    var startNewWorkout by rememberSaveable { mutableStateOf(false) }
     var darkMode by rememberSaveable { mutableStateOf(appPrefs.getBoolean("darkMode", true)) }
     var records by remember { mutableStateOf(emptyList<WorkoutRecord>()) }
     var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
@@ -157,7 +176,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         Scaffold(
             bottomBar = {
                 NavigationBar {
-                    listOf("운동 설명", "운동 기록", "AI 분석", "환경설정").forEachIndexed { index, label ->
+                    listOf("홈", "운동 설명", "운동 기록", "AI 분석", "환경설정").forEachIndexed { index, label ->
                         NavigationBarItem(selected = selectedTab == index, onClick = { selectedTab = index },
                             icon = { Text((index + 1).toString()) }, label = { Text(label) })
                     }
@@ -166,13 +185,14 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (selectedTab) {
-                    0 -> ExerciseGuide(catalog)
-                    1 -> WorkoutScreen(catalog, records, onSave = { record ->
+                    0 -> HomeScreen(records, onStart = { startNewWorkout = true; selectedTab = 2 }, onHistory = { selectedTab = 2 })
+                    1 -> ExerciseGuide(catalog, exerciseContents)
+                    2 -> WorkoutScreen(catalog, records, startNew = startNewWorkout, onStartConsumed = { startNewWorkout = false }, onSave = { record ->
                         if (user != null) saveWorkout(record)
                     }, onDelete = { id ->
                         records = records.filterNot { it.id == id }; deleteWorkout(id)
                     }, onExport = { onExport(exportPayload(records)) })
-                    2 -> AnalysisScreen(records)
+                    3 -> AnalysisScreen(records)
                     else -> SettingsScreen(darkMode, { enabled ->
                         darkMode = enabled; appPrefs.edit().putBoolean("darkMode", enabled).apply()
                         user?.let { FirebaseFirestore.getInstance().collection("users").document(it.uid).set(mapOf("theme" to if (enabled) "dark" else "light"), SetOptions.merge()) }
@@ -183,9 +203,75 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     }
 }
 
-@Composable private fun ExerciseGuide(catalog: List<ExercisePreset>) {
+@Composable private fun HomeScreen(records: List<WorkoutRecord>, onStart: () -> Unit, onHistory: () -> Unit) {
+    val today = LocalDate.now()
+    val month = YearMonth.from(today)
+    val monthRecords = records.filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) }.getOrNull() == month }
+    val activeDates = monthRecords.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.toSet()
+    val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
+    val weeklyCounts = (3 downTo 0).map { offset ->
+        val start = monday.minusWeeks(offset.toLong())
+        records.count { record -> runCatching { LocalDate.parse(record.date) }.getOrNull()?.let { !it.isBefore(start) && !it.isAfter(start.plusDays(6)) } == true }
+    }
+    val calendarCells = List(month.atDay(1).dayOfWeek.value % 7) { null } + (1..month.lengthOfMonth()).toList()
+
+    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        Column {
+            Text("HOME", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+            Text("운동 흐름을 한눈에 확인하세요.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("${month.year}년 ${month.monthValue}월", fontWeight = FontWeight.Black)
+                    Text("${monthRecords.size} 세션 · ${activeDates.size}일", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth()) { listOf("일", "월", "화", "수", "목", "금", "토").forEach { day -> Text(day, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
+                calendarCells.chunked(7).forEach { week ->
+                    Row(Modifier.fillMaxWidth()) {
+                        week.forEach { day ->
+                            val date = day?.let { month.atDay(it) }
+                            Box(Modifier.weight(1f).aspectRatio(1f).padding(2.dp).background(if (date in activeDates) Lime else Color.Transparent, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                                if (day != null) Text(day.toString(), color = if (date in activeDates) Dark else MaterialTheme.colorScheme.onSurface, fontWeight = if (date in activeDates) FontWeight.Black else FontWeight.Normal)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("최근 4주 운동 빈도", fontWeight = FontWeight.Black)
+                weeklyCounts.forEachIndexed { index, count ->
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Text(if (index == 3) "이번 주" else "${3 - index}주 전", modifier = Modifier.width(46.dp), style = MaterialTheme.typography.labelMedium)
+                        LinearProgressIndicator(progress = (count.coerceAtMost(7) / 7f), modifier = Modifier.weight(1f), color = Lime, trackColor = MaterialTheme.colorScheme.surfaceVariant)
+                        Text("${count}회", modifier = Modifier.width(28.dp), style = MaterialTheme.typography.labelMedium)
+                    }
+                }
+            }
+        }
+        ElevatedCard(Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(18.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Column { Text("이번 달", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("운동일 ${activeDates.size}일", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black) }
+                Column(horizontalAlignment = Alignment.End) { Text("총 세션 ${monthRecords.size}회", fontWeight = FontWeight.Bold); Text("운동 종목 ${monthRecords.sumOf { it.exercises.size }}개", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        }
+        Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("운동 기록") }
+        OutlinedButton(onClick = onHistory, modifier = Modifier.fillMaxWidth()) { Text("전체 운동 기록 보기") }
+    }
+}
+
+@Composable private fun ExerciseGuide(catalog: List<ExercisePreset>, contents: Map<String, ExerciseContent>) {
     var group by rememberSaveable { mutableStateOf("가슴") }
+    var selectedPresetId by rememberSaveable { mutableStateOf<String?>(null) }
     val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
+    val selectedPreset = selectedPresetId?.let { id -> catalog.firstOrNull { it.presetId == id } }
+    if (selectedPreset != null) {
+        ExerciseDetail(selectedPreset, contents[selectedPreset.presetId], onBack = { selectedPresetId = null })
+        return
+    }
     Column(Modifier.fillMaxSize().padding(20.dp)) {
         Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
         Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동을 봅니다.")
@@ -196,10 +282,103 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         LazyColumn {
             items(catalog.filter { koreanPart(it.defaultUiPart) == group }) { preset ->
                 ListItem(headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
-                    supportingContent = { Text(group) })
+                    supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) },
+                    modifier = Modifier.clickable { selectedPresetId = preset.presetId })
                 HorizontalDivider()
             }
         }
+    }
+}
+
+@Composable private fun ExerciseDetail(preset: ExercisePreset, content: ExerciseContent?, onBack: () -> Unit) {
+    val name = preset.nameKo.ifBlank { preset.nameEn }
+    val detail = content ?: ExerciseContent(presetId = preset.presetId, titleKo = name, equipment = "운동 장비")
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var mediaUrl by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaMatchedName by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaMatchedExactly by remember(preset.presetId) { mutableStateOf(true) }
+    var mediaAuthToken by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaError by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaLoading by remember(preset.presetId) { mutableStateOf(false) }
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Spacer(Modifier.height(12.dp))
+            TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("← 운동 목록") }
+            Text(name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+            Text(preset.nameEn, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("자극 부위", fontWeight = FontWeight.Black)
+                    Text("주요: ${detail.primaryMuscles.filter { it.isNotBlank() }.joinToString(" · ").ifBlank { koreanPart(preset.defaultUiPart) }}")
+                    if (detail.secondaryMuscles.isNotEmpty()) Text("보조: ${detail.secondaryMuscles.joinToString(" · ")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("장비: ${detail.equipment}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("동작 GIF", fontWeight = FontWeight.Black)
+                    Text("필요할 때만 불러오며, 앱에 API 키를 저장하지 않습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (mediaUrl == null) {
+                        Button(onClick = {
+                            mediaLoading = true; mediaError = null
+                            scope.launch {
+                                runCatching { requestExerciseMedia(preset) }.onSuccess { media ->
+                                    mediaUrl = media.url; mediaMatchedName = media.name; mediaMatchedExactly = media.matchedExactly; mediaAuthToken = media.authToken
+                                }.onFailure { error -> mediaError = error.message ?: "GIF를 불러오지 못했습니다." }
+                                mediaLoading = false
+                            }
+                        }, enabled = !mediaLoading, modifier = Modifier.fillMaxWidth()) { Text(if (mediaLoading) "GIF 불러오는 중…" else "동작 GIF 보기") }
+                    } else {
+                        val request = ImageRequest.Builder(context).data(mediaUrl).crossfade(true)
+                            .addHeader("Authorization", "Bearer ${mediaAuthToken.orEmpty()}").build()
+                        AsyncImage(model = request, contentDescription = "$name 동작 GIF", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp))
+                        mediaMatchedName?.let { matched -> Text("WorkoutX 매칭: $matched", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        if (!mediaMatchedExactly) Text("이름 기준 유사 동작일 수 있으니 장비·그립·각도를 확인하세요.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    mediaError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("준비", fontWeight = FontWeight.Black)
+                    Text(detail.setup)
+                    Text("수행 방법", fontWeight = FontWeight.Black)
+                    detail.steps.forEachIndexed { index, step -> Text("${index + 1}. $step") }
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("핵심 큐", fontWeight = FontWeight.Black)
+                    Text(detail.keyCue, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("주의사항", fontWeight = FontWeight.Black)
+                    detail.cautions.forEach { caution -> Text("• $caution") }
+                }
+            }
+        }
+        if (detail.referenceNotice != null) item {
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("참고 동작 안내", fontWeight = FontWeight.Black)
+                    Text(detail.referenceNotice)
+                }
+            }
+        }
+        item { Text("콘텐츠: ${detail.source}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(24.dp)) }
     }
 }
 
@@ -257,8 +436,14 @@ private fun bodyPartAt(x: Float, y: Float): String {
     }
 }
 
-@Composable private fun WorkoutScreen(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, onSave: (WorkoutRecord) -> Unit, onDelete: (String) -> Unit, onExport: () -> Unit) {
+@Composable private fun WorkoutScreen(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, startNew: Boolean, onStartConsumed: () -> Unit, onSave: (WorkoutRecord) -> Unit, onDelete: (String) -> Unit, onExport: () -> Unit) {
     var editing by remember { mutableStateOf<WorkoutRecord?>(null) }
+    LaunchedEffect(startNew) {
+        if (startNew) {
+            editing = WorkoutRecord(date = today(), exercises = emptyList())
+            onStartConsumed()
+        }
+    }
     if (editing != null) WorkoutEditor(catalog, editing!!, { onSave(it); editing = null }, { editing = null })
     else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
 }
@@ -279,7 +464,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
         }
         LazyColumn(contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(records) { record ->
-                ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                ElevatedCard(Modifier.fillMaxWidth().clickable { edit(record) }) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(record.date, fontWeight = FontWeight.Bold)
                         Text(record.title.ifBlank { "제목 없음" }, maxLines = 1, fontWeight = FontWeight.SemiBold)
@@ -297,7 +482,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
     var date by remember { mutableStateOf(initial.date) }
     var title by remember { mutableStateOf(initial.title) }
     var exercises by remember { mutableStateOf(initial.exercises) }
-    var query by remember { mutableStateOf("") }
+    var pickerOpen by remember { mutableStateOf(false) }
     Scaffold(topBar = {
         TopAppBar(
             title = { Text("운동 기록 수정") },
@@ -318,10 +503,28 @@ private fun bodyPartAt(x: Float, y: Float): String {
             items(exercises, key = { it.id }) { exercise ->
                 ExerciseCard(exercise, { changed -> exercises = exercises.map { if (it.id == changed.id) changed else it } }, { exercises = exercises.filterNot { it.id == exercise.id } })
             }
-            item {
-                OutlinedTextField(query, { query = it }, label = { Text("운동 검색") }, modifier = Modifier.fillMaxWidth())
-                catalog.filter { matches(it, query) }.take(8).forEach { preset ->
-                    ListItem(headlineContent = { Text(preset.nameKo) }, modifier = Modifier.clickable { exercises = exercises + WorkoutEntry(preset = preset); query = "" })
+            item { Button(onClick = { pickerOpen = true }, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("운동 추가") } }
+        }
+    }
+    if (pickerOpen) ExercisePickerSheet(catalog, onSelect = { preset -> exercises = exercises + WorkoutEntry(preset = preset); pickerOpen = false }, onDismiss = { pickerOpen = false })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun ExercisePickerSheet(catalog: List<ExercisePreset>, onSelect: (ExercisePreset) -> Unit, onDismiss: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { searchFocus.requestFocus() }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.8f).imePadding().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text("운동 추가", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+            Text("검색 후 운동을 선택하세요.", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(query, { query = it }, singleLine = true, label = { Text("운동 검색") }, modifier = Modifier.fillMaxWidth().focusRequester(searchFocus))
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+                items(catalog.filter { matches(it, query) }) { preset ->
+                    ListItem(headlineContent = { Text(preset.nameKo) }, supportingContent = { Text(koreanPart(preset.defaultUiPart)) }, modifier = Modifier.fillMaxWidth().clickable { onSelect(preset) })
+                    HorizontalDivider()
                 }
             }
         }
@@ -345,11 +548,11 @@ private fun bodyPartAt(x: Float, y: Float): String {
                     val needsReps = recordType !in setOf("time", "weight_time")
                     val needsTime = recordType in setOf("time", "weight_time")
                     if (needsLoad) {
-                        OutlinedTextField(set.inputLoadValue, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadValue = value) else it })) }, label = { Text("중량") }, modifier = Modifier.weight(1f))
+                        OutlinedTextField(set.inputLoadValue, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadValue = value) else it })) }, label = { Text("중량") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next), modifier = Modifier.weight(1f))
                         Spacer(Modifier.width(6.dp)); UnitSelector(set.inputLoadUnit) { unit -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(inputLoadUnit = unit) else it })) }; Spacer(Modifier.width(6.dp))
                     }
-                    if (needsReps) OutlinedTextField(set.reps, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(reps = value) else it })) }, label = { Text("REPS") }, modifier = Modifier.weight(1f))
-                    if (needsTime) OutlinedTextField(set.durationSeconds, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(durationSeconds = value) else it })) }, label = { Text("초") }, modifier = Modifier.weight(1f))
+                    if (needsReps) OutlinedTextField(set.reps, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(reps = value) else it })) }, label = { Text("REPS") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next), modifier = Modifier.weight(1f))
+                    if (needsTime) OutlinedTextField(set.durationSeconds, { value -> change(exercise.copy(sets = exercise.sets.map { if (it.id == set.id) it.copy(durationSeconds = value) else it })) }, label = { Text("초") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next), modifier = Modifier.weight(1f))
                 }
             }
         }
@@ -431,6 +634,14 @@ private fun loadStateLabel(state: String) = when (state) {
     val context = androidx.compose.ui.platform.LocalContext.current
     return remember { Json { ignoreUnknownKeys = true }.decodeFromString<CatalogFile>(context.assets.open("friend_exercise_catalog_v1.json").bufferedReader().use { it.readText() }).presets }
 }
+@Composable private fun loadExerciseContents(): Map<String, ExerciseContent> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return remember {
+        Json { ignoreUnknownKeys = true }
+            .decodeFromString<ExerciseContentFile>(context.assets.open("exercise_content_v1.json").bufferedReader().use { it.readText() })
+            .exercises.associateBy { it.presetId }
+    }
+}
 private fun koreanPart(part: String) = when (part) { "chest" -> "가슴"; "back" -> "등"; "lower_body", "legs" -> "하체"; "shoulders" -> "어깨"; "arms" -> "팔"; else -> "복부" }
 private fun matches(p: ExercisePreset, query: String): Boolean { val normalized = query.replace(" ", "").lowercase(); return normalized.isBlank() || listOf(p.nameKo, p.nameEn, *p.searchAliases.toTypedArray()).any { it.replace(" ", "").lowercase().contains(normalized) || normalized.contains(it.replace(" ", "").lowercase()) } }
 private fun today() = java.time.LocalDate.now().toString()
@@ -443,6 +654,23 @@ private val analysisClient = OkHttpClient.Builder()
     .readTimeout(180, TimeUnit.SECONDS)
     .callTimeout(190, TimeUnit.SECONDS)
     .build()
+private data class ExerciseMedia(val url: String, val name: String, val matchedExactly: Boolean, val authToken: String)
+private suspend fun requestExerciseMedia(preset: ExercisePreset): ExerciseMedia = withContext(Dispatchers.IO) {
+    val token = FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
+        ?: error("GIF를 보려면 Google 로그인이 필요합니다.")
+    val name = URLEncoder.encode(preset.nameEn, "UTF-8")
+    val equipment = URLEncoder.encode(preset.equipmentVariantId, "UTF-8")
+    val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/exercise-media?name=$name&equipment=$equipment")
+        .header("Authorization", "Bearer $token").build()
+    analysisClient.newCall(request).execute().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) error(JSONObject(body).optString("error", "GIF를 불러오지 못했습니다. (${response.code})"))
+        val json = JSONObject(body)
+        val gifPath = json.optString("gifPath")
+        if (gifPath.isBlank()) error("GIF 주소가 없습니다.")
+        ExerciseMedia("${BuildConfig.ANALYSIS_BASE_URL}$gifPath", json.optString("name", preset.nameEn), json.optBoolean("matchedExactly", false), token)
+    }
+}
 private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecord>, cumulative: Boolean): String = withContext(Dispatchers.IO) {
     try {
         val prefs = context.getSharedPreferences("liftlog", Context.MODE_PRIVATE)

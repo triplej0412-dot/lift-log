@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import './recordCardNavigation'
 import { auth, db, googleProvider } from './firebase'
 import { onAuthStateChanged, signInWithPopup, type User } from 'firebase/auth'
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, orderBy, query, setDoc, Timestamp, updateDoc } from 'firebase/firestore'
