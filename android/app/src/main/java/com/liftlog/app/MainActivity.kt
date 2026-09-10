@@ -510,11 +510,11 @@ private fun bodyPartAt(x: Float, y: Float): String {
     fallbackGroup: String
 ) {
     val context = LocalContext.current
-    val muscleMap = remember { BitmapFactory.decodeStream(context.assets.open("muscle-activation-map-v1.png")).asImageBitmap() }
+    val muscleMap = remember { BitmapFactory.decodeStream(context.assets.open("muscle-activation-map-v2-front-back.png")).asImageBitmap() }
     val primary = muscleRegionsFor(primaryMuscles, fallbackGroup)
     val secondary = muscleRegionsFor(secondaryMuscles, "") - primary
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("자극 지도", fontWeight = FontWeight.Bold)
+        Text("자극 지도 · 전면 / 후면", fontWeight = FontWeight.Bold)
         Box(Modifier.fillMaxWidth().heightIn(max = 360.dp).aspectRatio(muscleMap.width.toFloat() / muscleMap.height), contentAlignment = Alignment.Center) {
             Image(muscleMap, contentDescription = "자극 부위 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
             Canvas(Modifier.fillMaxSize()) { drawActivationOverlays(primary, secondary) }
@@ -541,15 +541,30 @@ private fun muscleRegionsFor(muscles: List<String>, fallbackGroup: String): Set<
 
 private fun DrawScope.drawActivationOverlays(primary: Set<String>, secondary: Set<String>) {
     val shapes = mapOf(
-        "chest" to listOf(floatArrayOf(.31f,.19f,.47f,.18f,.49f,.28f,.34f,.29f), floatArrayOf(.51f,.18f,.68f,.19f,.66f,.29f,.51f,.28f)),
-        "shoulder" to listOf(floatArrayOf(.22f,.18f,.34f,.16f,.35f,.25f,.25f,.27f), floatArrayOf(.66f,.16f,.78f,.18f,.75f,.27f,.65f,.25f)),
-        "arms" to listOf(floatArrayOf(.22f,.27f,.32f,.27f,.29f,.49f,.19f,.48f), floatArrayOf(.68f,.27f,.78f,.27f,.81f,.48f,.71f,.49f)),
-        "abs" to listOf(floatArrayOf(.39f,.29f,.61f,.29f,.60f,.52f,.40f,.52f)),
-        "thighs" to listOf(floatArrayOf(.32f,.52f,.48f,.53f,.47f,.77f,.32f,.76f), floatArrayOf(.52f,.53f,.68f,.52f,.68f,.76f,.53f,.77f)),
-        "calves" to listOf(floatArrayOf(.33f,.77f,.47f,.77f,.45f,.94f,.34f,.94f), floatArrayOf(.53f,.77f,.67f,.77f,.66f,.94f,.55f,.94f)),
-        // This is a front-view reference. Back-focused movements retain their text labels;
-        // shoulders and arms still light up where they are secondary movers.
-        "back" to emptyList()
+        // All paths are deliberately inset from the figure borders, preventing any
+        // activation color from spilling into the background around the silhouette.
+        "chest" to listOf(floatArrayOf(.14f,.19f,.28f,.18f,.30f,.29f,.16f,.29f), floatArrayOf(.30f,.18f,.45f,.19f,.43f,.29f,.30f,.29f)),
+        "shoulder" to listOf(
+            floatArrayOf(.09f,.18f,.17f,.16f,.21f,.21f,.17f,.27f,.10f,.25f), floatArrayOf(.39f,.21f,.45f,.16f,.51f,.18f,.50f,.25f,.43f,.27f),
+            floatArrayOf(.55f,.18f,.61f,.16f,.68f,.20f,.65f,.27f,.57f,.25f), floatArrayOf(.84f,.20f,.91f,.16f,.97f,.18f,.96f,.25f,.89f,.27f)
+        ),
+        "arms" to listOf(
+            floatArrayOf(.09f,.27f,.18f,.26f,.17f,.48f,.08f,.47f), floatArrayOf(.42f,.26f,.51f,.27f,.52f,.47f,.43f,.48f),
+            floatArrayOf(.55f,.27f,.65f,.26f,.66f,.48f,.57f,.47f), floatArrayOf(.84f,.26f,.94f,.27f,.92f,.47f,.83f,.48f)
+        ),
+        "abs" to listOf(floatArrayOf(.20f,.30f,.40f,.30f,.40f,.51f,.20f,.51f)),
+        "thighs" to listOf(
+            floatArrayOf(.14f,.52f,.28f,.52f,.29f,.72f,.15f,.72f), floatArrayOf(.31f,.52f,.45f,.52f,.44f,.72f,.30f,.72f),
+            floatArrayOf(.62f,.63f,.75f,.63f,.75f,.77f,.63f,.77f), floatArrayOf(.78f,.63f,.89f,.63f,.88f,.77f,.77f,.77f)
+        ),
+        "calves" to listOf(
+            floatArrayOf(.16f,.74f,.27f,.74f,.27f,.91f,.18f,.91f), floatArrayOf(.32f,.74f,.43f,.74f,.42f,.91f,.33f,.91f),
+            floatArrayOf(.64f,.78f,.75f,.78f,.75f,.91f,.66f,.91f), floatArrayOf(.78f,.78f,.88f,.78f,.86f,.91f,.78f,.91f)
+        ),
+        "back" to listOf(
+            floatArrayOf(.66f,.20f,.83f,.20f,.91f,.34f,.83f,.50f,.74f,.50f,.58f,.34f),
+            floatArrayOf(.64f,.50f,.87f,.50f,.87f,.63f,.63f,.63f)
+        )
     )
     shapes.forEach { (region, polygons) ->
         val color = when {

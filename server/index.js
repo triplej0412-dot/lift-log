@@ -126,8 +126,16 @@ app.get('/api/exercise-media', requireFirebaseUser, async (req, res) => {
     });
     if (!upstream.ok) return res.status(502).json({ error: `WorkoutX 조회 실패 (${upstream.status})` });
     const items = await upstream.json();
-    const candidate = Array.isArray(items) ? [...items].sort((a, b) => workoutxCandidateScore(name, equipment, b) - workoutxCandidateScore(name, equipment, a))[0] : null;
-    if (!candidate?.id || !candidate?.gifUrl) return res.status(404).json({ error: 'GIF가 있는 운동을 찾지 못했습니다.' });
+    const match = Array.isArray(items) ? [...items].sort((a, b) => workoutxCandidateScore(name, equipment, b) - workoutxCandidateScore(name, equipment, a))[0] : null;
+    if (!match?.id) return res.status(404).json({ error: 'WorkoutX에서 일치하는 운동을 찾지 못했습니다.' });
+
+    // The name-search endpoint can return a compact record without gifUrl. Fetch
+    // the canonical exercise record by id, where WorkoutX guarantees the GIF field.
+    const detailResponse = await fetch(`https://api.workoutxapp.com/v1/exercises/exercise/${encodeURIComponent(match.id)}`, {
+      headers: { 'X-WorkoutX-Key': WORKOUTX_API_KEY }
+    });
+    if (!detailResponse.ok) return res.status(502).json({ error: `WorkoutX 상세 조회 실패 (${detailResponse.status})` });
+    const candidate = await detailResponse.json();
     const gifUrl = String(candidate.gifUrl || '');
     if (!gifUrl) return res.status(404).json({ error: 'GIF가 있는 운동을 찾지 못했습니다.' });
     const value = {
