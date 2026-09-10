@@ -68,6 +68,13 @@ private val Lime = Color(0xFF9DFF1A)
 private val Dark = Color(0xFF101112)
 
 @Serializable data class CatalogFile(val formatVersion: Int = 1, val presets: List<ExercisePreset> = emptyList())
+@Serializable data class ExerciseContentFile(val formatVersion: Int = 1, val exercises: List<ExerciseContent> = emptyList())
+@Serializable data class ExerciseContent(
+    val presetId: String = "", val titleKo: String = "", val primaryMuscles: List<String> = emptyList(),
+    val secondaryMuscles: List<String> = emptyList(), val equipment: String = "", val setup: String = "",
+    val steps: List<String> = emptyList(), val keyCue: String = "", val cautions: List<String> = emptyList(),
+    val referenceNotice: String? = null, val source: String = ""
+)
 @Serializable data class ExercisePreset(
     val presetId: String = "", val nameKo: String = "", val nameEn: String = "",
     val defaultUiPart: String = "", val searchAliases: List<String> = emptyList(),
@@ -130,6 +137,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val catalog = loadCatalog()
+    val exerciseContents = loadExerciseContents()
     val appContext = LocalContext.current
     val appPrefs = remember { appContext.getSharedPreferences("liftlog", Context.MODE_PRIVATE) }
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
@@ -170,7 +178,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (selectedTab) {
                     0 -> HomeScreen(records, onStart = { startNewWorkout = true; selectedTab = 2 }, onHistory = { selectedTab = 2 })
-                    1 -> ExerciseGuide(catalog)
+                    1 -> ExerciseGuide(catalog, exerciseContents)
                     2 -> WorkoutScreen(catalog, records, startNew = startNewWorkout, onStartConsumed = { startNewWorkout = false }, onSave = { record ->
                         if (user != null) saveWorkout(record)
                     }, onDelete = { id ->
@@ -247,9 +255,15 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     }
 }
 
-@Composable private fun ExerciseGuide(catalog: List<ExercisePreset>) {
+@Composable private fun ExerciseGuide(catalog: List<ExercisePreset>, contents: Map<String, ExerciseContent>) {
     var group by rememberSaveable { mutableStateOf("가슴") }
+    var selectedPresetId by rememberSaveable { mutableStateOf<String?>(null) }
     val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
+    val selectedPreset = selectedPresetId?.let { id -> catalog.firstOrNull { it.presetId == id } }
+    if (selectedPreset != null) {
+        ExerciseDetail(selectedPreset, contents[selectedPreset.presetId], onBack = { selectedPresetId = null })
+        return
+    }
     Column(Modifier.fillMaxSize().padding(20.dp)) {
         Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
         Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동을 봅니다.")
@@ -260,10 +274,69 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         LazyColumn {
             items(catalog.filter { koreanPart(it.defaultUiPart) == group }) { preset ->
                 ListItem(headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
-                    supportingContent = { Text(group) })
+                    supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) },
+                    modifier = Modifier.clickable { selectedPresetId = preset.presetId })
                 HorizontalDivider()
             }
         }
+    }
+}
+
+@Composable private fun ExerciseDetail(preset: ExercisePreset, content: ExerciseContent?, onBack: () -> Unit) {
+    val name = preset.nameKo.ifBlank { preset.nameEn }
+    val detail = content ?: ExerciseContent(presetId = preset.presetId, titleKo = name, equipment = "운동 장비")
+    LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item {
+            Spacer(Modifier.height(12.dp))
+            TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("← 운동 목록") }
+            Text(name, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+            Text(preset.nameEn, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("자극 부위", fontWeight = FontWeight.Black)
+                    Text("주요: ${detail.primaryMuscles.filter { it.isNotBlank() }.joinToString(" · ").ifBlank { koreanPart(preset.defaultUiPart) }}")
+                    if (detail.secondaryMuscles.isNotEmpty()) Text("보조: ${detail.secondaryMuscles.joinToString(" · ")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("장비: ${detail.equipment}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("준비", fontWeight = FontWeight.Black)
+                    Text(detail.setup)
+                    Text("수행 방법", fontWeight = FontWeight.Black)
+                    detail.steps.forEachIndexed { index, step -> Text("${index + 1}. $step") }
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("핵심 큐", fontWeight = FontWeight.Black)
+                    Text(detail.keyCue, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("주의사항", fontWeight = FontWeight.Black)
+                    detail.cautions.forEach { caution -> Text("• $caution") }
+                }
+            }
+        }
+        if (detail.referenceNotice != null) item {
+            Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("참고 동작 안내", fontWeight = FontWeight.Black)
+                    Text(detail.referenceNotice)
+                }
+            }
+        }
+        item { Text("콘텐츠: ${detail.source}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant); Spacer(Modifier.height(24.dp)) }
     }
 }
 
@@ -491,6 +564,14 @@ private fun loadStateLabel(state: String) = when (state) {
 @Composable private fun loadCatalog(): List<ExercisePreset> {
     val context = androidx.compose.ui.platform.LocalContext.current
     return remember { Json { ignoreUnknownKeys = true }.decodeFromString<CatalogFile>(context.assets.open("friend_exercise_catalog_v1.json").bufferedReader().use { it.readText() }).presets }
+}
+@Composable private fun loadExerciseContents(): Map<String, ExerciseContent> {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    return remember {
+        Json { ignoreUnknownKeys = true }
+            .decodeFromString<ExerciseContentFile>(context.assets.open("exercise_content_v1.json").bufferedReader().use { it.readText() })
+            .exercises.associateBy { it.presetId }
+    }
 }
 private fun koreanPart(part: String) = when (part) { "chest" -> "가슴"; "back" -> "등"; "lower_body", "legs" -> "하체"; "shoulders" -> "어깨"; "arms" -> "팔"; else -> "복부" }
 private fun matches(p: ExercisePreset, query: String): Boolean { val normalized = query.replace(" ", "").lowercase(); return normalized.isBlank() || listOf(p.nameKo, p.nameEn, *p.searchAliases.toTypedArray()).any { it.replace(" ", "").lowercase().contains(normalized) || normalized.contains(it.replace(" ", "").lowercase()) } }
