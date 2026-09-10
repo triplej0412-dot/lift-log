@@ -68,6 +68,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.tasks.await
@@ -280,6 +281,16 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 @Composable private fun ExerciseGuide(catalog: List<ExercisePreset>, contents: Map<String, ExerciseContent>) {
     var selectedGroup by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedPresetId by rememberSaveable { mutableStateOf<String?>(null) }
+    var highlightedGroup by rememberSaveable { mutableStateOf("가슴") }
+    var requestedGroup by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(requestedGroup) {
+        requestedGroup?.let { group ->
+            // Let the new highlight render briefly before opening the next page.
+            delay(180)
+            selectedGroup = group
+            requestedGroup = null
+        }
+    }
     val selectedPreset = selectedPresetId?.let { id -> catalog.firstOrNull { it.presetId == id } }
     if (selectedPreset != null) {
         BackHandler { selectedPresetId = null }
@@ -301,7 +312,10 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
         Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동 목록으로 이동합니다.")
-        BodySelector("가슴") { selectedGroup = it }
+        BodySelector(selected = highlightedGroup) { group ->
+            highlightedGroup = group
+            requestedGroup = group
+        }
     }
 }
 
@@ -463,8 +477,8 @@ private fun DrawScope.drawBodySelection(selected: String) {
         // The zones sit within the corresponding muscle contours in the illustration.
         // No border is drawn: the artwork's own dark anatomy lines remain the boundary.
         "가슴" to listOf(
-            floatArrayOf(.135f,.215f, .185f,.195f, .245f,.205f, .252f,.252f, .220f,.282f, .162f,.274f, .135f,.245f),
-            floatArrayOf(.255f,.205f, .315f,.195f, .365f,.215f, .365f,.245f, .338f,.274f, .280f,.282f, .248f,.252f)
+            floatArrayOf(.120f,.200f, .165f,.177f, .235f,.186f, .248f,.245f, .216f,.272f, .150f,.264f, .120f,.238f),
+            floatArrayOf(.252f,.186f, .322f,.177f, .368f,.200f, .368f,.238f, .338f,.264f, .272f,.272f, .248f,.245f)
         ),
         "등" to listOf(
             floatArrayOf(.625f,.185f, .700f,.155f, .750f,.185f, .750f,.395f, .705f,.445f, .650f,.395f),
@@ -504,6 +518,8 @@ private fun DrawScope.drawBodySelection(selected: String) {
     }
 }
 private fun bodyPartAt(x: Float, y: Float): String {
+    // The artwork has two full figures with a narrow gap at the middle.
+    if (x in .46f.. .54f || y < .11f || y > .93f) return "가슴"
     val front = x < 0.5f
     val localX = if (front) x / 0.5f else (x - 0.5f) / 0.5f
     if (localX < .13f || localX > .87f) return if (y < .28f) "어깨" else "팔"
