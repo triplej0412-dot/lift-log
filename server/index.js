@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import fs from 'node:fs';
 import { cert, getApps, initializeApp } from 'firebase-admin/app';
 import { getAuth } from 'firebase-admin/auth';
 
@@ -15,6 +16,25 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const WORKOUTX_API_KEY = process.env.WORKOUTX_API_KEY;
 const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 const workoutxLookupCache = new Map();
+const workoutxAliases = new Map();
+
+try {
+  const auditFile = new URL('../tools/exercise-audit/coverage-result.json', import.meta.url);
+  const audit = JSON.parse(fs.readFileSync(auditFile, 'utf8'));
+  for (const row of audit.rows || []) {
+    const candidates = [row.freeExerciseDb, row.repDb]
+      .filter((candidate) => candidate?.status !== 'unmatched' && candidate?.candidateName)
+      .sort((a, b) => {
+        const rank = (candidate) => (candidate.status === 'exact' ? 10 : 0) + Number(candidate.score || 0);
+        return rank(b) - rank(a);
+      })
+      .map((candidate) => candidate.candidateName);
+    if (candidates.length) workoutxAliases.set(row.presetId, [...new Set(candidates)]);
+  }
+  console.log(`Loaded WorkoutX fallback aliases for ${workoutxAliases.size} catalog exercises.`);
+} catch (error) {
+  console.warn('WorkoutX alias audit was not available:', error.message);
+}
 
 if (serviceAccountJson) {
   initializeApp({ credential: cert(JSON.parse(serviceAccountJson)) });
@@ -131,6 +151,7 @@ async function searchWorkoutxExercises(name) {
   // Keep the dedicated name endpoint as a fallback for API versions where the
   // list filter is not enabled on the current plan.
   const nameResponse = await fetch(`https://api.workoutxapp.com/v1/exercises/name/${encodeURIComponent(name)}`, { headers });
+  if (nameResponse.status === 404) return [];
   if (!nameResponse.ok) throw new Error(`WorkoutX 이름 검색 실패 (${nameResponse.status})`);
   return workoutxItems(await nameResponse.json());
 }
@@ -138,14 +159,27 @@ async function searchWorkoutxExercises(name) {
 app.get('/api/exercise-media', requireFirebaseUser, async (req, res) => {
   const name = String(req.query.name || '').trim();
   const equipment = String(req.query.equipment || '').trim();
+  const presetId = String(req.query.presetId || '').trim();
   if (!WORKOUTX_API_KEY) return res.status(503).json({ error: 'WorkoutX API 키가 서버에 설정되지 않았습니다.' });
   if (!name) return res.status(400).json({ error: '운동 이름이 필요합니다.' });
-  const cacheKey = `${name}|${equipment}`;
+  const cacheKey = `${presetId || name}|${equipment}`;
   const cached = workoutxLookupCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return res.json(cached.value);
   try {
-    const items = await searchWorkoutxExercises(name);
-    const match = [...items].sort((a, b) => workoutxCandidateScore(name, equipment, b) - workoutxCandidateScore(name, equipment, a))[0] || null;
+    // The audit maps 342 of 363 LiftLog presets to reviewed external names.
+    // Search those aliases first, then fall back to the catalog's canonical name.
+    const searchNames = [...new Set([...(workoutxAliases.get(presetId) || []), name])];
+    let match = null;
+    let matchedQuery = name;
+    for (const query of searchNames) {
+      const items = await searchWorkoutxExercises(query);
+      const candidate = [...items].sort((a, b) => workoutxCandidateScore(query, equipment, b) - workoutxCandidateScore(query, equipment, a))[0] || null;
+      if (candidate?.id) {
+        match = candidate;
+        matchedQuery = query;
+        break;
+      }
+    }
     if (!match?.id) return res.status(404).json({ error: 'WorkoutX에서 일치하는 운동을 찾지 못했습니다.' });
 
     // The name-search endpoint can return a compact record without gifUrl. Fetch
@@ -161,7 +195,8 @@ app.get('/api/exercise-media', requireFirebaseUser, async (req, res) => {
       id: candidate.id,
       name: candidate.name,
       gifPath: `/api/exercise-gif/${encodeURIComponent(candidate.id)}?source=${encodeURIComponent(gifUrl)}`,
-      matchedExactly: normalizeExerciseName(name) === normalizeExerciseName(candidate.name)
+      matchedExactly: normalizeExerciseName(name) === normalizeExerciseName(candidate.name),
+      matchedQuery
     };
     workoutxLookupCache.set(cacheKey, { value, expiresAt: Date.now() + 6 * 60 * 60 * 1000 });
     res.json(value);

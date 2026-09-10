@@ -811,7 +811,8 @@ private suspend fun requestExerciseMedia(preset: ExercisePreset): ExerciseMedia 
         ?: error("GIF를 보려면 Google 로그인이 필요합니다.")
     val name = URLEncoder.encode(preset.nameEn, "UTF-8")
     val equipment = URLEncoder.encode(preset.equipmentVariantId, "UTF-8")
-    val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/exercise-media?name=$name&equipment=$equipment")
+    val presetId = URLEncoder.encode(preset.presetId, "UTF-8")
+    val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/exercise-media?name=$name&equipment=$equipment&presetId=$presetId")
         .header("Authorization", "Bearer $token").build()
     analysisClient.newCall(request).execute().use { response ->
         val body = response.body?.string().orEmpty()
