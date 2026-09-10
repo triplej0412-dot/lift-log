@@ -40,6 +40,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
+import coil.request.ImageRequest
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
@@ -57,6 +59,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.net.URLEncoder
 import java.time.LocalDate
 import java.time.YearMonth
 import okhttp3.MediaType.Companion.toMediaType
@@ -79,7 +82,7 @@ private val Dark = Color(0xFF101112)
     val presetId: String = "", val nameKo: String = "", val nameEn: String = "",
     val defaultUiPart: String = "", val searchAliases: List<String> = emptyList(),
     val canonicalPresetId: String = "", val storageExerciseId: String = "", val familyId: String = "",
-    val canonicalVariantKey: String = "", val visualVariantKey: String? = null,
+    val canonicalVariantKey: String = "", val visualVariantKey: String? = null, val equipmentVariantId: String = "",
     val recordType: String = "weight_reps", val laterality: String = "bilateral", val implementMultiplier: Int = 1,
     val defaultLoadState: String = "external_load", val allowedLoadStates: List<String> = emptyList()
 )
@@ -285,6 +288,13 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 @Composable private fun ExerciseDetail(preset: ExercisePreset, content: ExerciseContent?, onBack: () -> Unit) {
     val name = preset.nameKo.ifBlank { preset.nameEn }
     val detail = content ?: ExerciseContent(presetId = preset.presetId, titleKo = name, equipment = "운동 장비")
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var mediaUrl by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaMatchedName by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaAuthToken by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaError by remember(preset.presetId) { mutableStateOf<String?>(null) }
+    var mediaLoading by remember(preset.presetId) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item {
             Spacer(Modifier.height(12.dp))
@@ -299,6 +309,31 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     Text("주요: ${detail.primaryMuscles.filter { it.isNotBlank() }.joinToString(" · ").ifBlank { koreanPart(preset.defaultUiPart) }}")
                     if (detail.secondaryMuscles.isNotEmpty()) Text("보조: ${detail.secondaryMuscles.joinToString(" · ")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("장비: ${detail.equipment}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("동작 GIF", fontWeight = FontWeight.Black)
+                    Text("필요할 때만 불러오며, 앱에 API 키를 저장하지 않습니다.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    if (mediaUrl == null) {
+                        Button(onClick = {
+                            mediaLoading = true; mediaError = null
+                            scope.launch {
+                                runCatching { requestExerciseMedia(preset) }.onSuccess { media ->
+                                    mediaUrl = media.url; mediaMatchedName = media.name; mediaAuthToken = media.authToken
+                                }.onFailure { error -> mediaError = error.message ?: "GIF를 불러오지 못했습니다." }
+                                mediaLoading = false
+                            }
+                        }, enabled = !mediaLoading, modifier = Modifier.fillMaxWidth()) { Text(if (mediaLoading) "GIF 불러오는 중…" else "동작 GIF 보기") }
+                    } else {
+                        val request = ImageRequest.Builder(context).data(mediaUrl).crossfade(true)
+                            .addHeader("Authorization", "Bearer ${mediaAuthToken.orEmpty()}").build()
+                        AsyncImage(model = request, contentDescription = "$name 동작 GIF", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp))
+                        mediaMatchedName?.let { matched -> Text("WorkoutX 매칭: $matched", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    }
+                    mediaError?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 }
             }
         }
@@ -585,6 +620,23 @@ private val analysisClient = OkHttpClient.Builder()
     .readTimeout(180, TimeUnit.SECONDS)
     .callTimeout(190, TimeUnit.SECONDS)
     .build()
+private data class ExerciseMedia(val url: String, val name: String, val authToken: String)
+private suspend fun requestExerciseMedia(preset: ExercisePreset): ExerciseMedia = withContext(Dispatchers.IO) {
+    val token = FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
+        ?: error("GIF를 보려면 Google 로그인이 필요합니다.")
+    val name = URLEncoder.encode(preset.nameEn, "UTF-8")
+    val equipment = URLEncoder.encode(preset.equipmentVariantId, "UTF-8")
+    val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/exercise-media?name=$name&equipment=$equipment")
+        .header("Authorization", "Bearer $token").build()
+    analysisClient.newCall(request).execute().use { response ->
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) error(JSONObject(body).optString("error", "GIF를 불러오지 못했습니다. (${response.code})"))
+        val json = JSONObject(body)
+        val gifPath = json.optString("gifPath")
+        if (gifPath.isBlank()) error("GIF 주소가 없습니다.")
+        ExerciseMedia("${BuildConfig.ANALYSIS_BASE_URL}$gifPath", json.optString("name", preset.nameEn), token)
+    }
+}
 private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecord>, cumulative: Boolean): String = withContext(Dispatchers.IO) {
     try {
         val prefs = context.getSharedPreferences("liftlog", Context.MODE_PRIVATE)
