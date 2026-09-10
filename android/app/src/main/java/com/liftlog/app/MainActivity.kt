@@ -28,6 +28,8 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -252,7 +254,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
         }
         LazyColumn(contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             items(records) { record ->
-                ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                ElevatedCard(Modifier.fillMaxWidth().clickable { edit(record) }) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(record.date, fontWeight = FontWeight.Bold)
                         Text(record.exercises.map { it.preset.nameKo }.distinct().joinToString(" · ").ifBlank { "운동 이름 없음" }, maxLines = 2)
@@ -269,7 +271,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
 @Composable private fun WorkoutEditor(catalog: List<ExercisePreset>, initial: WorkoutRecord, save: (WorkoutRecord) -> Unit, cancel: () -> Unit) {
     var date by remember { mutableStateOf(initial.date) }
     var exercises by remember { mutableStateOf(initial.exercises) }
-    var query by remember { mutableStateOf("") }
+    var pickerOpen by remember { mutableStateOf(false) }
     Scaffold(topBar = {
         TopAppBar(
             title = { Text("운동 기록 수정") },
@@ -286,10 +288,28 @@ private fun bodyPartAt(x: Float, y: Float): String {
             items(exercises, key = { it.id }) { exercise ->
                 ExerciseCard(exercise, { changed -> exercises = exercises.map { if (it.id == changed.id) changed else it } }, { exercises = exercises.filterNot { it.id == exercise.id } })
             }
-            item {
-                OutlinedTextField(query, { query = it }, label = { Text("운동 검색") }, modifier = Modifier.fillMaxWidth())
-                catalog.filter { matches(it, query) }.take(8).forEach { preset ->
-                    ListItem(headlineContent = { Text(preset.nameKo) }, modifier = Modifier.clickable { exercises = exercises + WorkoutEntry(preset = preset); query = "" })
+            item { Button(onClick = { pickerOpen = true }, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) { Icon(Icons.Default.Add, null); Spacer(Modifier.width(6.dp)); Text("운동 추가") } }
+        }
+    }
+    if (pickerOpen) ExercisePickerSheet(catalog, onSelect = { preset -> exercises = exercises + WorkoutEntry(preset = preset); pickerOpen = false }, onDismiss = { pickerOpen = false })
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun ExercisePickerSheet(catalog: List<ExercisePreset>, onSelect: (ExercisePreset) -> Unit, onDismiss: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf("") }
+    val searchFocus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { searchFocus.requestFocus() }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().fillMaxHeight(0.8f).imePadding().padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text("운동 추가", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+            Text("검색 후 운동을 선택하세요.", style = MaterialTheme.typography.bodySmall)
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(query, { query = it }, singleLine = true, label = { Text("운동 검색") }, modifier = Modifier.fillMaxWidth().focusRequester(searchFocus))
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+                items(catalog.filter { matches(it, query) }) { preset ->
+                    ListItem(headlineContent = { Text(preset.nameKo) }, supportingContent = { Text(koreanPart(preset.defaultUiPart)) }, modifier = Modifier.fillMaxWidth().clickable { onSelect(preset) })
+                    HorizontalDivider()
                 }
             }
         }
