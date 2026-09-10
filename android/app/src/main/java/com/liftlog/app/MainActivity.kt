@@ -632,7 +632,9 @@ private fun loadStateLabel(state: String) = when (state) {
 
 @Composable private fun loadCatalog(): List<ExercisePreset> {
     val context = androidx.compose.ui.platform.LocalContext.current
-    return remember { Json { ignoreUnknownKeys = true }.decodeFromString<CatalogFile>(context.assets.open("friend_exercise_catalog_v1.json").bufferedReader().use { it.readText() }).presets }
+    // The shared catalog intentionally uses null for some optional variant fields.
+    // Coerce those values to each model property's default instead of crashing at startup.
+    return remember { Json { ignoreUnknownKeys = true; coerceInputValues = true }.decodeFromString<CatalogFile>(context.assets.open("friend_exercise_catalog_v1.json").bufferedReader().use { it.readText() }).presets }
 }
 @Composable private fun loadExerciseContents(): Map<String, ExerciseContent> {
     val context = androidx.compose.ui.platform.LocalContext.current
