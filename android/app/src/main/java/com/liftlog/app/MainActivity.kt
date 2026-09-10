@@ -12,7 +12,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
@@ -29,12 +31,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.auth.GoogleAuthProvider
@@ -79,7 +84,7 @@ data class WorkoutEntry(
 )
 data class WorkoutRecord(
     val id: String = UUID.randomUUID().toString(), val date: String,
-    val exercises: List<WorkoutEntry>
+    val exercises: List<WorkoutEntry>, val title: String = ""
 )
 
 class MainActivity : ComponentActivity() {
@@ -204,9 +209,11 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val bodyMap = remember { BitmapFactory.decodeStream(context.assets.open("body-map-segmented-v3.png")).asImageBitmap() }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("신체 부위를 직접 누르거나 아래 버튼을 선택하세요.")
-        Box(Modifier.fillMaxWidth().aspectRatio(bodyMap.width.toFloat() / bodyMap.height).padding(vertical = 8.dp)
-            .pointerInput(Unit) { detectTapGestures { point -> select(bodyPartAt(point.x / size.width, point.y / size.height)) } }) {
+        Box(Modifier.fillMaxWidth().aspectRatio(bodyMap.width.toFloat() / bodyMap.height).padding(vertical = 8.dp)) {
             Image(bodyMap, contentDescription = "운동 부위 선택 신체 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+            Canvas(Modifier.fillMaxSize().pointerInput(selected) {
+                detectTapGestures { point -> select(bodyPartAt(point.x / size.width, point.y / size.height)) }
+            }) { drawBodyOverlays(selected) }
         }
         Text("선택: $selected", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         groups.chunked(3).forEach { row ->
@@ -216,6 +223,26 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
             Spacer(Modifier.height(8.dp))
         }
     }
+}
+private fun DrawScope.drawBodyOverlays(selected: String) {
+    val regions = mapOf(
+        "가슴" to listOf(floatArrayOf(.14f,.24f, .22f,.21f, .27f,.23f, .27f,.34f, .21f,.37f, .15f,.34f), floatArrayOf(.28f,.23f, .34f,.21f, .42f,.24f, .41f,.34f, .35f,.37f, .28f,.34f)),
+        "등" to listOf(floatArrayOf(.62f,.23f, .74f,.18f, .86f,.23f, .82f,.42f, .75f,.47f, .66f,.42f)),
+        "복부" to listOf(floatArrayOf(.22f,.35f, .34f,.35f, .35f,.49f, .23f,.49f)),
+        "어깨" to listOf(floatArrayOf(.08f,.23f, .16f,.19f, .22f,.21f, .15f,.30f, .08f,.31f), floatArrayOf(.34f,.21f, .42f,.19f, .48f,.24f, .42f,.31f, .35f,.30f), floatArrayOf(.59f,.23f, .65f,.19f, .71f,.22f, .65f,.31f, .59f,.30f), floatArrayOf(.83f,.22f, .89f,.19f, .96f,.24f, .91f,.31f, .84f,.30f)),
+        "팔" to listOf(floatArrayOf(.05f,.31f, .14f,.29f, .17f,.46f, .10f,.58f, .04f,.51f), floatArrayOf(.42f,.29f, .49f,.31f, .50f,.51f, .44f,.58f, .38f,.46f), floatArrayOf(.53f,.31f, .60f,.29f, .62f,.46f, .56f,.58f, .50f,.51f), floatArrayOf(.87f,.29f, .96f,.31f, .97f,.51f, .91f,.58f, .84f,.46f)),
+        "하체" to listOf(floatArrayOf(.13f,.51f, .25f,.49f, .28f,.88f, .12f,.88f), floatArrayOf(.29f,.49f, .40f,.51f, .42f,.88f, .27f,.88f), floatArrayOf(.61f,.51f, .74f,.49f, .74f,.88f, .59f,.88f), floatArrayOf(.76f,.49f, .88f,.51f, .90f,.88f, .75f,.88f))
+    )
+    regions.forEach { (part, polygons) -> polygons.forEach { points ->
+        val path = Path().apply {
+            moveTo(points[0] * size.width, points[1] * size.height)
+            var index = 2
+            while (index < points.size) { lineTo(points[index] * size.width, points[index + 1] * size.height); index += 2 }
+            close()
+        }
+        if (part == selected) drawPath(path, Lime.copy(alpha = .62f))
+        drawPath(path, if (part == selected) Lime else Color.White.copy(alpha = .22f), style = Stroke(width = 2f * density))
+    } }
 }
 private fun bodyPartAt(x: Float, y: Float): String {
     val front = x < 0.5f
@@ -255,7 +282,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
                 ElevatedCard(Modifier.fillMaxWidth()) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(record.date, fontWeight = FontWeight.Bold)
-                        Text(record.exercises.map { it.preset.nameKo }.distinct().joinToString(" · ").ifBlank { "운동 이름 없음" }, maxLines = 2)
+                        Text(record.title.ifBlank { "제목 없음" }, maxLines = 1, fontWeight = FontWeight.SemiBold)
                     }
                     IconButton(onClick = { edit(record) }) { Icon(Icons.Default.Edit, "수정") }
                     IconButton(onClick = { deleting = record }) { Icon(Icons.Default.Delete, "삭제") }
@@ -268,6 +295,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun WorkoutEditor(catalog: List<ExercisePreset>, initial: WorkoutRecord, save: (WorkoutRecord) -> Unit, cancel: () -> Unit) {
     var date by remember { mutableStateOf(initial.date) }
+    var title by remember { mutableStateOf(initial.title) }
     var exercises by remember { mutableStateOf(initial.exercises) }
     var query by remember { mutableStateOf("") }
     Scaffold(topBar = {
@@ -275,14 +303,18 @@ private fun bodyPartAt(x: Float, y: Float): String {
             title = { Text("운동 기록 수정") },
             navigationIcon = { TextButton(onClick = cancel) { Text("취소") } },
             actions = {
-                TextButton(onClick = { save(initial.copy(date = date, exercises = exercises)) }, enabled = exercises.isNotEmpty()) {
+                TextButton(onClick = { save(initial.copy(date = date, exercises = exercises, title = title.trim())) }, enabled = exercises.isNotEmpty()) {
                     Text("SAVE", color = Lime, fontWeight = FontWeight.Bold)
                 }
             }
         )
     }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp), contentPadding = PaddingValues(bottom = 30.dp)) {
-            item { OutlinedTextField(date, { date = it }, label = { Text("날짜 (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth()) }
+            item {
+                OutlinedTextField(date, { date = it }, label = { Text("날짜 (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(title, { title = it }, label = { Text("기록 제목 (예: 등, 하체)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            }
             items(exercises, key = { it.id }) { exercise ->
                 ExerciseCard(exercise, { changed -> exercises = exercises.map { if (it.id == changed.id) changed else it } }, { exercises = exercises.filterNot { it.id == exercise.id } })
             }
@@ -467,7 +499,7 @@ private fun exportPayload(records: List<WorkoutRecord>): String = JSONObject(map
     "exportedAt" to java.time.Instant.now().toString(), "workouts" to records.map(::exportWorkout)
 )).toString(2)
 private fun exportWorkout(record: WorkoutRecord): Map<String, Any?> = mapOf(
-    "sourceRecordId" to record.id, "status" to "completed", "title" to null,
+    "sourceRecordId" to record.id, "status" to "completed", "title" to record.title.ifBlank { null },
     "startedAt" to java.time.LocalDate.parse(record.date).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant().toString(),
     "endedAt" to null, "memo" to null,
     "exercises" to record.exercises.mapIndexed { exerciseIndex, exercise ->
@@ -494,7 +526,7 @@ private fun saveWorkout(record: WorkoutRecord) { val user = FirebaseAuth.getInst
 private fun deleteWorkout(id: String) { val user = FirebaseAuth.getInstance().currentUser ?: return; FirebaseFirestore.getInstance().collection("users").document(user.uid).collection("workouts").document(id).delete() }
 private fun recordToMap(record: WorkoutRecord): Map<String, Any?> = mapOf(
     "id" to record.id,
-    "sourceRecordId" to record.id, "status" to "completed", "title" to null, "memo" to null,
+    "sourceRecordId" to record.id, "status" to "completed", "title" to record.title.ifBlank { null }, "memo" to null,
     "startedAt" to com.google.firebase.Timestamp(java.util.Date.from(java.time.LocalDate.parse(record.date).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant())),
     "endedAt" to com.google.firebase.Timestamp.now(),
     "exercises" to record.exercises.mapIndexed { index, exercise ->
@@ -555,5 +587,5 @@ private fun recordFromMap(document: com.google.firebase.firestore.DocumentSnapsh
         is String -> startedAt.take(10)
         else -> today()
     }
-    return WorkoutRecord(document.id, date, exercises)
+    return WorkoutRecord(document.id, date, exercises, data["title"] as? String ?: "")
 }
