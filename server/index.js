@@ -110,6 +110,31 @@ function workoutxCandidateScore(targetName, targetEquipment, candidate) {
   return score;
 }
 
+function workoutxItems(payload) {
+  // WorkoutX has returned both a raw array and paginated { data: [...] } records
+  // across API versions/plans. Treat either shape as a valid search response.
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.exercises)) return payload.exercises;
+  return [];
+}
+
+async function searchWorkoutxExercises(name) {
+  const headers = { 'X-WorkoutX-Key': WORKOUTX_API_KEY };
+  // The documented list endpoint supports partial name matching and generally
+  // returns richer records than the autocomplete endpoint.
+  const listResponse = await fetch(`https://api.workoutxapp.com/v1/exercises?name=${encodeURIComponent(name)}&limit=20`, { headers });
+  if (!listResponse.ok) throw new Error(`WorkoutX 조회 실패 (${listResponse.status})`);
+  const listItems = workoutxItems(await listResponse.json());
+  if (listItems.length) return listItems;
+
+  // Keep the dedicated name endpoint as a fallback for API versions where the
+  // list filter is not enabled on the current plan.
+  const nameResponse = await fetch(`https://api.workoutxapp.com/v1/exercises/name/${encodeURIComponent(name)}`, { headers });
+  if (!nameResponse.ok) throw new Error(`WorkoutX 이름 검색 실패 (${nameResponse.status})`);
+  return workoutxItems(await nameResponse.json());
+}
+
 app.get('/api/exercise-media', requireFirebaseUser, async (req, res) => {
   const name = String(req.query.name || '').trim();
   const equipment = String(req.query.equipment || '').trim();
@@ -119,14 +144,8 @@ app.get('/api/exercise-media', requireFirebaseUser, async (req, res) => {
   const cached = workoutxLookupCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return res.json(cached.value);
   try {
-    // WorkoutX name search is a path endpoint. The older query-string form simply
-    // returned an unrelated first page, so valid catalog exercises appeared to have no GIF.
-    const upstream = await fetch(`https://api.workoutxapp.com/v1/exercises/name/${encodeURIComponent(name)}?limit=10`, {
-      headers: { 'X-WorkoutX-Key': WORKOUTX_API_KEY }
-    });
-    if (!upstream.ok) return res.status(502).json({ error: `WorkoutX 조회 실패 (${upstream.status})` });
-    const items = await upstream.json();
-    const match = Array.isArray(items) ? [...items].sort((a, b) => workoutxCandidateScore(name, equipment, b) - workoutxCandidateScore(name, equipment, a))[0] : null;
+    const items = await searchWorkoutxExercises(name);
+    const match = [...items].sort((a, b) => workoutxCandidateScore(name, equipment, b) - workoutxCandidateScore(name, equipment, a))[0] || null;
     if (!match?.id) return res.status(404).json({ error: 'WorkoutX에서 일치하는 운동을 찾지 못했습니다.' });
 
     // The name-search endpoint can return a compact record without gifUrl. Fetch
