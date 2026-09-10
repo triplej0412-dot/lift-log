@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.widget.Toast
 import org.json.JSONObject
 import androidx.activity.ComponentActivity
@@ -53,6 +54,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import coil.compose.AsyncImage
+import coil.ImageLoader
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import coil.request.ImageRequest
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -332,6 +336,14 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val name = preset.nameKo.ifBlank { preset.nameEn }
     val detail = content ?: ExerciseContent(presetId = preset.presetId, titleKo = name, equipment = "운동 장비")
     val context = LocalContext.current
+    // Register an animated decoder explicitly. Without this, some Coil 2 image-loader
+    // configurations render only the first GIF frame even though the network response is valid.
+    val gifImageLoader = remember(context) {
+        ImageLoader.Builder(context).components {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) add(ImageDecoderDecoder.Factory())
+            else add(GifDecoder.Factory())
+        }.build()
+    }
     val scope = rememberCoroutineScope()
     var mediaUrl by remember(preset.presetId) { mutableStateOf<String?>(null) }
     var mediaMatchedName by remember(preset.presetId) { mutableStateOf<String?>(null) }
@@ -379,7 +391,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     } else {
                         val request = ImageRequest.Builder(context).data(mediaUrl).crossfade(true)
                             .addHeader("Authorization", "Bearer ${mediaAuthToken.orEmpty()}").build()
-                        AsyncImage(model = request, contentDescription = "$name 동작 GIF", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp))
+                        AsyncImage(model = request, imageLoader = gifImageLoader, contentDescription = "$name 동작 GIF", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp))
                         mediaMatchedName?.let { matched -> Text("WorkoutX 매칭: $matched", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         if (!mediaMatchedExactly) Text("이름 기준 유사 동작일 수 있으니 장비·그립·각도를 확인하세요.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                     }
