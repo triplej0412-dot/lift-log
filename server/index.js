@@ -70,6 +70,41 @@ function parseAnalysisJson(text) {
   }
 }
 
+const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+function isTransientGeminiError(data, responseStatus) {
+  const code = Number(data?.error?.code || responseStatus || 0);
+  const message = String(data?.error?.message || '').toLowerCase();
+  return [429, 500, 502, 503, 504].includes(code)
+    || /high demand|overload|temporar|unavailable|rate limit|timeout/.test(message);
+}
+
+async function generateGeminiWithRetry(url, payload, attempts = 3) {
+  let lastError;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await response.json();
+      if (!data.error || !isTransientGeminiError(data, response.status) || attempt === attempts - 1) return data;
+
+      const delay = 1200 * (2 ** attempt) + Math.floor(Math.random() * 500);
+      console.warn(`Gemini is temporarily busy (attempt ${attempt + 1}/${attempts}); retrying in ${delay}ms.`);
+      await sleep(delay);
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts - 1) throw error;
+      const delay = 1200 * (2 ** attempt) + Math.floor(Math.random() * 500);
+      console.warn(`Gemini request failed transiently (attempt ${attempt + 1}/${attempts}); retrying in ${delay}ms.`, error.message);
+      await sleep(delay);
+    }
+  }
+  throw lastError || new Error('Gemini 요청을 완료하지 못했습니다.');
+}
+
 async function requireFirebaseUser(req, res, next) {
   if (!getApps().length) return res.status(503).json({ error: 'AI server authentication is not configured.' });
   const token = req.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -102,20 +137,14 @@ app.post('/api/analyze', requireFirebaseUser, async (req, res) => {
     
     기록: ${JSON.stringify(workoutData)}`;
 
-    const response = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.25,
-          maxOutputTokens: 1600,
-          responseMimeType: 'application/json'
-        }
-      })
+    const data = await generateGeminiWithRetry(API_URL, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0.25,
+        maxOutputTokens: 1600,
+        responseMimeType: 'application/json'
+      }
     });
-
-    const data = await response.json();
 
     if (data.error) {
       console.error("Google API Error:", data.error);
@@ -129,15 +158,10 @@ app.post('/api/analyze', requireFirebaseUser, async (req, res) => {
     // A generation can be cut off mid-JSON. Retry once with a deliberately
     // compact request instead of sending raw JSON fragments to the app UI.
     console.warn('Gemini returned incomplete analysis JSON; requesting compact retry.');
-    const retryResponse = await fetch(API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: `${prompt}\n중요: 직전 응답이 잘렸어. 각 값은 한 문장, 120자 이내로 줄이고 반드시 완전한 JSON 객체만 반환해.` }] }],
-        generationConfig: { temperature: 0.2, maxOutputTokens: 900, responseMimeType: 'application/json' }
-      })
+    const retryData = await generateGeminiWithRetry(API_URL, {
+      contents: [{ parts: [{ text: `${prompt}\n중요: 직전 응답이 잘렸어. 각 값은 한 문장, 120자 이내로 줄이고 반드시 완전한 JSON 객체만 반환해.` }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 900, responseMimeType: 'application/json' }
     });
-    const retryData = await retryResponse.json();
     if (retryData.error) return res.status(500).json({ error: retryData.error.message });
     const retryParsed = parseAnalysisJson(candidateText(retryData));
     if (retryParsed) return res.json(retryParsed);
