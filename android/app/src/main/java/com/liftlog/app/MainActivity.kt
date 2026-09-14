@@ -748,6 +748,16 @@ private fun loadStateLabel(state: String) = when (state) {
     records: List<WorkoutRecord>, recentResult: String, cumulativeResult: String,
     analyzingMode: String?, onAnalyze: (Boolean) -> Unit
 ) {
+    var openedResult by rememberSaveable { mutableStateOf<String?>(null) }
+    if (openedResult != null) {
+        BackHandler { openedResult = null }
+        AnalysisDetail(
+            title = if (openedResult == "recent") "최근 기록 분석" else "누적 기록 분석",
+            result = if (openedResult == "recent") recentResult else cumulativeResult,
+            onBack = { openedResult = null }
+        )
+        return
+    }
     Column(Modifier.fillMaxSize().padding(20.dp)) {
         Text("AI ANALYSIS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
         Text("최근 세션 분석과 전체 누적 분석을 분리합니다.")
@@ -759,14 +769,34 @@ private fun loadStateLabel(state: String) = when (state) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(if (analyzingMode == "cumulative") "누적 기록을 분석하는 중…" else "최근 기록을 분석하는 중…", style = MaterialTheme.typography.bodySmall)
         }
-        ElevatedCard(Modifier.fillMaxWidth().weight(1f)) {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("최근 분석 결과", fontWeight = FontWeight.Black)
-                Text(recentResult)
-                HorizontalDivider()
-                Text("누적 분석 결과", fontWeight = FontWeight.Black)
-                Text(cumulativeResult)
+        AnalysisResultCard("최근 분석 결과", recentResult, onClick = { openedResult = "recent" })
+        Spacer(Modifier.height(10.dp))
+        AnalysisResultCard("누적 분석 결과", cumulativeResult, onClick = { openedResult = "cumulative" })
+    }
+}
+
+@Composable private fun AnalysisResultCard(title: String, result: String, onClick: () -> Unit) {
+    ElevatedCard(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
+        Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(title, fontWeight = FontWeight.Black, modifier = Modifier.weight(1f))
+                Text("자세히 보기 ›", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.Bold)
             }
+            Text(result.replace('\n', ' '), maxLines = 3, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable private fun AnalysisDetail(title: String, result: String, onBack: () -> Unit) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("← AI 분석") }
+            Spacer(Modifier.width(12.dp))
+            Text(title, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+        }
+        HorizontalDivider(Modifier.padding(vertical = 10.dp))
+        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(bottom = 28.dp)) {
+            Text(result, style = MaterialTheme.typography.bodyLarge)
         }
     }
 }
