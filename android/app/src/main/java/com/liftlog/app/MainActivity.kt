@@ -146,6 +146,9 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var startNewWorkout by rememberSaveable { mutableStateOf(false) }
     var darkMode by rememberSaveable { mutableStateOf(appPrefs.getBoolean("darkMode", true)) }
+    var analysisResult by rememberSaveable { mutableStateOf("최근 기록 또는 누적 기록 분석을 선택하세요.") }
+    var analysisLoading by remember { mutableStateOf(false) }
+    val analysisScope = rememberCoroutineScope()
     var records by remember { mutableStateOf(emptyList<WorkoutRecord>()) }
     var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
     DisposableEffect(Unit) {
@@ -187,7 +190,15 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     }, onDelete = { id ->
                         records = records.filterNot { it.id == id }; deleteWorkout(id)
                     }, onExport = { onExport(exportPayload(records)) })
-                    3 -> AnalysisScreen(records)
+                    3 -> AnalysisScreen(records, analysisResult, analysisLoading, onAnalyze = { cumulative ->
+                        if (!analysisLoading) {
+                            analysisScope.launch {
+                                analysisLoading = true
+                                analysisResult = requestAnalysis(appContext, records, cumulative)
+                                analysisLoading = false
+                            }
+                        }
+                    })
                     else -> SettingsScreen(darkMode, { enabled ->
                         darkMode = enabled; appPrefs.edit().putBoolean("darkMode", enabled).apply()
                         user?.let { FirebaseFirestore.getInstance().collection("users").document(it.uid).set(mapOf("theme" to if (enabled) "dark" else "light"), SetOptions.merge()) }
@@ -551,17 +562,13 @@ private fun loadStateLabel(state: String) = when (state) {
     Box { OutlinedButton(onClick = { expanded = true }) { Text(value.uppercase()) }; DropdownMenu(expanded, { expanded = false }) { listOf("kg", "lb").forEach { DropdownMenuItem({ Text(it.uppercase()) }, { change(it); expanded = false }) } } }
 }
 
-@Composable private fun AnalysisScreen(records: List<WorkoutRecord>) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var result by remember { mutableStateOf("최근 기록 또는 누적 기록 분석을 선택하세요.") }
-    var analyzing by remember { mutableStateOf(false) }
+@Composable private fun AnalysisScreen(records: List<WorkoutRecord>, result: String, analyzing: Boolean, onAnalyze: (Boolean) -> Unit) {
     Column(Modifier.fillMaxSize().padding(20.dp)) {
         Text("AI ANALYSIS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
         Text("최근 세션 분석과 전체 누적 분석을 분리합니다.")
         Row(Modifier.padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { scope.launch { analyzing = true; result = requestAnalysis(context, records, false); analyzing = false } }, enabled = records.isNotEmpty() && !analyzing) { Text("최근 기록 분석") }
-            Button(onClick = { scope.launch { analyzing = true; result = requestAnalysis(context, records, true); analyzing = false } }, enabled = records.isNotEmpty() && !analyzing) { Text("누적 기록 분석") }
+            Button(onClick = { onAnalyze(false) }, enabled = records.isNotEmpty() && !analyzing) { Text("최근 기록 분석") }
+            Button(onClick = { onAnalyze(true) }, enabled = records.isNotEmpty() && !analyzing) { Text("누적 기록 분석") }
         }
         if (analyzing) LinearProgressIndicator(Modifier.fillMaxWidth())
         ElevatedCard(Modifier.fillMaxWidth().weight(1f)) {
@@ -653,8 +660,7 @@ private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecor
         ) else mapOf(
             "profile" to profile,
             "latestWorkout" to history.first(),
-            "cumulativeSummary" to mapOf("workoutCount" to history.size, "from" to records.last().date, "to" to records.first().date),
-            "workoutHistory" to history
+            "cumulativeSummary" to mapOf("workoutCount" to history.size, "from" to records.last().date, "to" to records.first().date)
         )
         val payload = JSONObject(mapOf("analysisMode" to if (cumulative) "cumulative" else "latest", "workoutData" to workoutData)).toString()
         val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/analyze")
