@@ -246,7 +246,12 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val monthlyCounts = weekStarts.map { start ->
         monthRecords.count { record -> runCatching { LocalDate.parse(record.date) }.getOrNull()?.let { !it.isBefore(start) && !it.isAfter(start.plusDays(6)) } == true }
     }
-    val calendarCells = List(month.atDay(1).dayOfWeek.value % 7) { null } + (1..month.lengthOfMonth()).toList()
+    val leadingBlankDays = month.atDay(1).dayOfWeek.value % 7
+    val unpaddedCalendarCells = List(leadingBlankDays) { null } + (1..month.lengthOfMonth()).toList()
+    // A partial last Row gives its final dates extra width because each cell uses
+    // Modifier.weight(1f). Pad it to seven cells so every calendar date is square.
+    val trailingBlankDays = (7 - unpaddedCalendarCells.size % 7) % 7
+    val calendarCells = unpaddedCalendarCells + List(trailingBlankDays) { null }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Column {

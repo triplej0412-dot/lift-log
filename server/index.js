@@ -98,16 +98,28 @@ app.post('/api/analyze', requireFirebaseUser, async (req, res) => {
       return res.status(500).json({ error: data.error.message });
     }
 
-    // 결과 텍스트 추출 및 JSON 변환
-    if (data.candidates && data.candidates[0].content.parts[0].text) {
-      const text = data.candidates[0].content.parts[0].text;
+    // Gemini may return several text parts. Prefer structured JSON, but never
+    // discard a valid coaching response merely because the model omitted braces.
+    const text = data.candidates?.[0]?.content?.parts
+      ?.map((part) => part.text || '')
+      .join('\n')
+      .trim();
+    if (text) {
       const jsonMatch = text.match(/\{[\s\S]*\}/);
-      
       if (jsonMatch) {
-        res.json(JSON.parse(jsonMatch[0]));
-      } else {
-        res.status(500).json({ error: "분석 형식이 올바르지 않습니다." });
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          return res.json({
+            summary: String(parsed.summary || ''),
+            good: String(parsed.good || ''),
+            bad: String(parsed.bad || ''),
+            nextFocus: String(parsed.nextFocus || '')
+          });
+        } catch (parseError) {
+          console.warn('Gemini returned malformed JSON; sending text fallback:', parseError.message);
+        }
       }
+      return res.json({ summary: text, good: '', bad: '', nextFocus: '' });
     } else {
       res.status(500).json({ error: "AI 응답을 생성하지 못했습니다." });
     }
