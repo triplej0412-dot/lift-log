@@ -159,8 +159,9 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     var selectedTab by rememberSaveable { mutableIntStateOf(0) }
     var startNewWorkout by rememberSaveable { mutableStateOf(false) }
     var darkMode by rememberSaveable { mutableStateOf(appPrefs.getBoolean("darkMode", true)) }
-    var analysisResult by rememberSaveable { mutableStateOf("최근 기록 또는 누적 기록 분석을 선택하세요.") }
-    var analysisLoading by remember { mutableStateOf(false) }
+    var recentAnalysisResult by rememberSaveable { mutableStateOf("최근 기록 분석을 선택하세요.") }
+    var cumulativeAnalysisResult by rememberSaveable { mutableStateOf("누적 기록 분석을 선택하세요.") }
+    var analysisLoadingMode by remember { mutableStateOf<String?>(null) }
     val analysisScope = rememberCoroutineScope()
     var records by remember { mutableStateOf(emptyList<WorkoutRecord>()) }
     var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
@@ -206,12 +207,14 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     }, onDelete = { id ->
                         records = records.filterNot { it.id == id }; deleteWorkout(id)
                     }, onExport = { onExport(exportPayload(records)) })
-                    3 -> AnalysisScreen(records, analysisResult, analysisLoading, onAnalyze = { cumulative ->
-                        if (!analysisLoading) {
+                    3 -> AnalysisScreen(records, recentAnalysisResult, cumulativeAnalysisResult, analysisLoadingMode, onAnalyze = { cumulative ->
+                        if (analysisLoadingMode == null) {
                             analysisScope.launch {
-                                analysisLoading = true
-                                analysisResult = requestAnalysis(appContext, records, cumulative)
-                                analysisLoading = false
+                                val mode = if (cumulative) "cumulative" else "recent"
+                                analysisLoadingMode = mode
+                                val result = requestAnalysis(appContext, records, cumulative)
+                                if (cumulative) cumulativeAnalysisResult = result else recentAnalysisResult = result
+                                analysisLoadingMode = null
                             }
                         }
                     })
@@ -227,13 +230,21 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 
 @Composable private fun HomeScreen(records: List<WorkoutRecord>, onStart: () -> Unit, onHistory: () -> Unit) {
     val today = LocalDate.now()
-    val month = YearMonth.from(today)
+    var monthOffset by rememberSaveable { mutableIntStateOf(0) }
+    val month = YearMonth.from(today).plusMonths(monthOffset.toLong())
+    var frequencyMode by rememberSaveable { mutableStateOf("monthly") }
     val monthRecords = records.filter { runCatching { YearMonth.from(LocalDate.parse(it.date)) }.getOrNull() == month }
     val activeDates = monthRecords.mapNotNull { runCatching { LocalDate.parse(it.date) }.getOrNull() }.toSet()
     val monday = today.minusDays((today.dayOfWeek.value - 1).toLong())
-    val weeklyCounts = (3 downTo 0).map { offset ->
+    val recentWeeklyCounts = (3 downTo 0).map { offset ->
         val start = monday.minusWeeks(offset.toLong())
         records.count { record -> runCatching { LocalDate.parse(record.date) }.getOrNull()?.let { !it.isBefore(start) && !it.isAfter(start.plusDays(6)) } == true }
+    }
+    val gridStart = month.atDay(1).minusDays((month.atDay(1).dayOfWeek.value % 7).toLong())
+    val weekStarts = generateSequence(gridStart) { it.plusDays(7) }
+        .takeWhile { !it.isAfter(month.atEndOfMonth()) }.toList()
+    val monthlyCounts = weekStarts.map { start ->
+        monthRecords.count { record -> runCatching { LocalDate.parse(record.date) }.getOrNull()?.let { !it.isBefore(start) && !it.isAfter(start.plusDays(6)) } == true }
     }
     val calendarCells = List(month.atDay(1).dayOfWeek.value % 7) { null } + (1..month.lengthOfMonth()).toList()
 
@@ -244,10 +255,12 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         }
         ElevatedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp)) {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { monthOffset-- }, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("‹") }
                     Text("${month.year}년 ${month.monthValue}월", fontWeight = FontWeight.Black)
-                    Text("${monthRecords.size} 세션 · ${activeDates.size}일", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    TextButton(onClick = { monthOffset++ }, contentPadding = PaddingValues(horizontal = 4.dp)) { Text("›") }
                 }
+                Text("${monthRecords.size} 세션 · ${activeDates.size}일", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.height(12.dp))
                 Row(Modifier.fillMaxWidth()) { listOf("일", "월", "화", "수", "목", "금", "토").forEach { day -> Text(day, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } }
                 calendarCells.chunked(7).forEach { week ->
@@ -262,12 +275,27 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                 }
             }
         }
-        ElevatedCard(Modifier.fillMaxWidth()) {
+        if (records.isEmpty()) {
+            ElevatedCard(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("아직 운동 기록이 없습니다", fontWeight = FontWeight.Black)
+                    Text("운동을 기록하면 달력과 월별 빈도가 채워집니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Button(onClick = onStart, modifier = Modifier.fillMaxWidth()) { Text("첫 운동 기록하기") }
+                }
+            }
+        } else ElevatedCard(Modifier.fillMaxWidth()) {
             Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("최근 4주 운동 빈도", fontWeight = FontWeight.Black)
-                weeklyCounts.forEachIndexed { index, count ->
+                Text(if (frequencyMode == "monthly") "월별 운동 빈도" else "최근 4주 운동 빈도", fontWeight = FontWeight.Black)
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (frequencyMode == "recent") Button(onClick = { frequencyMode = "recent" }, modifier = Modifier.weight(1f)) { Text("최근 4주") }
+                    else OutlinedButton(onClick = { frequencyMode = "recent" }, modifier = Modifier.weight(1f)) { Text("최근 4주") }
+                    if (frequencyMode == "monthly") Button(onClick = { frequencyMode = "monthly" }, modifier = Modifier.weight(1f)) { Text("월별") }
+                    else OutlinedButton(onClick = { frequencyMode = "monthly" }, modifier = Modifier.weight(1f)) { Text("월별") }
+                }
+                val counts = if (frequencyMode == "monthly") monthlyCounts else recentWeeklyCounts
+                counts.forEachIndexed { index, count ->
                     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        Text(if (index == 3) "이번 주" else "${3 - index}주 전", modifier = Modifier.width(46.dp), style = MaterialTheme.typography.labelMedium)
+                        Text(if (frequencyMode == "monthly") "${index + 1}주차" else if (index == 3) "이번 주" else "${3 - index}주 전", modifier = Modifier.width(46.dp), style = MaterialTheme.typography.labelMedium)
                         LinearProgressIndicator(progress = (count.coerceAtMost(7) / 7f), modifier = Modifier.weight(1f), color = Lime, trackColor = MaterialTheme.colorScheme.surfaceVariant)
                         Text("${count}회", modifier = Modifier.width(28.dp), style = MaterialTheme.typography.labelMedium)
                     }
@@ -276,7 +304,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         }
         ElevatedCard(Modifier.fillMaxWidth()) {
             Row(Modifier.padding(18.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                Column { Text("이번 달", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("운동일 ${activeDates.size}일", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black) }
+                Column { Text("선택한 달", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant); Text("운동일 ${activeDates.size}일", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Black) }
                 Column(horizontalAlignment = Alignment.End) { Text("총 세션 ${monthRecords.size}회", fontWeight = FontWeight.Bold); Text("운동 종목 ${monthRecords.sumOf { it.exercises.size }}개", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
             }
         }
@@ -622,7 +650,7 @@ private fun muscleRegionsFor(muscles: List<String>, fallbackGroup: String): Set<
             }
         )
     }) { padding ->
-        LazyColumn(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp), contentPadding = PaddingValues(bottom = 30.dp)) {
+        LazyColumn(Modifier.fillMaxSize().imePadding().padding(padding).padding(horizontal = 16.dp), contentPadding = PaddingValues(bottom = 80.dp)) {
             item {
                 OutlinedTextField(date, { date = it }, label = { Text("날짜 (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(10.dp))
@@ -711,17 +739,29 @@ private fun loadStateLabel(state: String) = when (state) {
     Box { OutlinedButton(onClick = { expanded = true }) { Text(value.uppercase()) }; DropdownMenu(expanded, { expanded = false }) { listOf("kg", "lb").forEach { DropdownMenuItem({ Text(it.uppercase()) }, { change(it); expanded = false }) } } }
 }
 
-@Composable private fun AnalysisScreen(records: List<WorkoutRecord>, result: String, analyzing: Boolean, onAnalyze: (Boolean) -> Unit) {
+@Composable private fun AnalysisScreen(
+    records: List<WorkoutRecord>, recentResult: String, cumulativeResult: String,
+    analyzingMode: String?, onAnalyze: (Boolean) -> Unit
+) {
     Column(Modifier.fillMaxSize().padding(20.dp)) {
         Text("AI ANALYSIS", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
         Text("최근 세션 분석과 전체 누적 분석을 분리합니다.")
         Row(Modifier.padding(vertical = 16.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { onAnalyze(false) }, enabled = records.isNotEmpty() && !analyzing) { Text("최근 기록 분석") }
-            Button(onClick = { onAnalyze(true) }, enabled = records.isNotEmpty() && !analyzing) { Text("누적 기록 분석") }
+            Button(onClick = { onAnalyze(false) }, enabled = records.isNotEmpty() && analyzingMode == null) { Text("최근 기록 분석") }
+            Button(onClick = { onAnalyze(true) }, enabled = records.isNotEmpty() && analyzingMode == null) { Text("누적 기록 분석") }
         }
-        if (analyzing) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (analyzingMode != null) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(if (analyzingMode == "cumulative") "누적 기록을 분석하는 중…" else "최근 기록을 분석하는 중…", style = MaterialTheme.typography.bodySmall)
+        }
         ElevatedCard(Modifier.fillMaxWidth().weight(1f)) {
-            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) { Text(result) }
+            Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("최근 분석 결과", fontWeight = FontWeight.Black)
+                Text(recentResult)
+                HorizontalDivider()
+                Text("누적 분석 결과", fontWeight = FontWeight.Black)
+                Text(cumulativeResult)
+            }
         }
     }
 }
