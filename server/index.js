@@ -46,6 +46,30 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true });
 });
 
+function candidateText(data) {
+  return data.candidates?.[0]?.content?.parts
+    ?.map((part) => part.text || '')
+    .join('\n')
+    .trim() || '';
+}
+
+function parseAnalysisJson(text) {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) return null;
+  try {
+    const parsed = JSON.parse(jsonMatch[0]);
+    if (!Object.values(parsed).some((value) => String(value || '').trim())) return null;
+    return {
+      summary: String(parsed.summary || ''),
+      good: String(parsed.good || ''),
+      bad: String(parsed.bad || ''),
+      nextFocus: String(parsed.nextFocus || '')
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function requireFirebaseUser(req, res, next) {
   if (!getApps().length) return res.status(503).json({ error: 'AI server authentication is not configured.' });
   const token = req.get('authorization')?.match(/^Bearer\s+(.+)$/i)?.[1];
@@ -73,7 +97,7 @@ app.post('/api/analyze', requireFirebaseUser, async (req, res) => {
     분석 범위: ${analysisScope}
     기록의 startedAt/endedAt 간격은 사용자가 기록을 시작하고 저장한 시각일 뿐 실제 운동 시간으로 해석하지 마.
     estimatedTrainingDurationMinutes가 있으면 그것을 일반적인 세트 수·종목 전환·휴식 시간을 반영한 운동시간으로 사용해. 신체 프로필을 분석에 반영해.
-    반드시 다음 형식을 지켜서 JSON으로만 답해줘. 각 항목은 2~4문장 이내로 작성해.
+    반드시 다음 형식을 지켜서 JSON으로만 답해줘. 각 항목은 1~3문장, 350자 이내로 작성해.
     {"summary": "오늘의 총평", "good": "잘한 점", "bad": "개선할 점", "nextFocus": "다음 운동 추천 부위와 이유·운동 예시"}
     
     기록: ${JSON.stringify(workoutData)}`;
@@ -85,7 +109,7 @@ app.post('/api/analyze', requireFirebaseUser, async (req, res) => {
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: 0.25,
-          maxOutputTokens: 700,
+          maxOutputTokens: 1600,
           responseMimeType: 'application/json'
         }
       })
@@ -98,30 +122,30 @@ app.post('/api/analyze', requireFirebaseUser, async (req, res) => {
       return res.status(500).json({ error: data.error.message });
     }
 
-    // Gemini may return several text parts. Prefer structured JSON, but never
-    // discard a valid coaching response merely because the model omitted braces.
-    const text = data.candidates?.[0]?.content?.parts
-      ?.map((part) => part.text || '')
-      .join('\n')
-      .trim();
-    if (text) {
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        try {
-          const parsed = JSON.parse(jsonMatch[0]);
-          return res.json({
-            summary: String(parsed.summary || ''),
-            good: String(parsed.good || ''),
-            bad: String(parsed.bad || ''),
-            nextFocus: String(parsed.nextFocus || '')
-          });
-        } catch (parseError) {
-          console.warn('Gemini returned malformed JSON; sending text fallback:', parseError.message);
-        }
-      }
-      return res.json({ summary: text, good: '', bad: '', nextFocus: '' });
-    } else {
+    const text = candidateText(data);
+    const parsed = parseAnalysisJson(text);
+    if (parsed) return res.json(parsed);
+
+    // A generation can be cut off mid-JSON. Retry once with a deliberately
+    // compact request instead of sending raw JSON fragments to the app UI.
+    console.warn('Gemini returned incomplete analysis JSON; requesting compact retry.');
+    const retryResponse = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `${prompt}\n중요: 직전 응답이 잘렸어. 각 값은 한 문장, 120자 이내로 줄이고 반드시 완전한 JSON 객체만 반환해.` }] }],
+        generationConfig: { temperature: 0.2, maxOutputTokens: 900, responseMimeType: 'application/json' }
+      })
+    });
+    const retryData = await retryResponse.json();
+    if (retryData.error) return res.status(500).json({ error: retryData.error.message });
+    const retryParsed = parseAnalysisJson(candidateText(retryData));
+    if (retryParsed) return res.json(retryParsed);
+
+    if (!text) {
       res.status(500).json({ error: "AI 응답을 생성하지 못했습니다." });
+    } else {
+      res.status(502).json({ error: "AI 분석 응답이 중간에 끊겼습니다. 다시 시도해주세요." });
     }
 
   } catch (error) {
