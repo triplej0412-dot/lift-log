@@ -5,13 +5,22 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.widget.Toast
 import org.json.JSONObject
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -38,9 +47,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.input.pointer.pointerInput
 import coil.compose.AsyncImage
+import coil.ImageLoader
+import coil.decode.GifDecoder
+import coil.decode.ImageDecoderDecoder
 import coil.request.ImageRequest
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
@@ -52,6 +64,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.tasks.await
@@ -96,7 +109,7 @@ data class WorkoutEntry(
 )
 data class WorkoutRecord(
     val id: String = UUID.randomUUID().toString(), val date: String,
-    val exercises: List<WorkoutEntry>
+    val exercises: List<WorkoutEntry>, val title: String = ""
 )
 
 class MainActivity : ComponentActivity() {
@@ -171,6 +184,9 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val scheme = if (darkMode) darkColorScheme(background = Dark, surface = Color(0xFF242526), primary = Lime)
         else lightColorScheme(primary = Color(0xFF5E9F00))
     MaterialTheme(colorScheme = scheme) {
+        // Child screens (exercise detail and record editor) register their own handler first.
+        // From a tab's root, the system back button returns to Home instead of closing the app.
+        BackHandler(enabled = selectedTab != 0) { selectedTab = 0 }
         Scaffold(
             bottomBar = {
                 NavigationBar {
@@ -270,27 +286,68 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 }
 
 @Composable private fun ExerciseGuide(catalog: List<ExercisePreset>, contents: Map<String, ExerciseContent>) {
-    var group by rememberSaveable { mutableStateOf("가슴") }
+    var selectedGroup by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedPresetId by rememberSaveable { mutableStateOf<String?>(null) }
-    val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
+    var highlightedGroup by rememberSaveable { mutableStateOf("가슴") }
+    var requestedGroup by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(requestedGroup) {
+        requestedGroup?.let { group ->
+            // Let the new highlight render briefly before opening the next page.
+            delay(180)
+            selectedGroup = group
+            requestedGroup = null
+        }
+    }
     val selectedPreset = selectedPresetId?.let { id -> catalog.firstOrNull { it.presetId == id } }
     if (selectedPreset != null) {
+        BackHandler { selectedPresetId = null }
         ExerciseDetail(selectedPreset, contents[selectedPreset.presetId], onBack = { selectedPresetId = null })
         return
     }
-    Column(Modifier.fillMaxSize().padding(20.dp)) {
+    val group = selectedGroup
+    if (group != null) {
+        BackHandler { selectedGroup = null }
+        ExerciseGroupList(
+            group = group,
+            catalog = catalog,
+            contents = contents,
+            onBack = { selectedGroup = null },
+            onPresetSelected = { selectedPresetId = it }
+        )
+        return
+    }
+    Column(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("EXERCISE GUIDE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-        Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동을 봅니다.")
-        Spacer(Modifier.height(18.dp))
-        BodySelector(group, { group = it })
-        Spacer(Modifier.height(12.dp))
-        Text("$group 운동", fontWeight = FontWeight.Bold)
-        LazyColumn {
-            items(catalog.filter { koreanPart(it.defaultUiPart) == group }) { preset ->
-                ListItem(headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
-                    supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) },
-                    modifier = Modifier.clickable { selectedPresetId = preset.presetId })
-                HorizontalDivider()
+        Text("신체 부위 또는 텍스트를 누르면 해당 부위 운동 목록으로 이동합니다.")
+        BodySelector(selected = highlightedGroup) { group ->
+            highlightedGroup = group
+            requestedGroup = group
+        }
+    }
+}
+
+@Composable private fun ExerciseGroupList(
+    group: String,
+    catalog: List<ExercisePreset>,
+    contents: Map<String, ExerciseContent>,
+    onBack: () -> Unit,
+    onPresetSelected: (String) -> Unit
+) {
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("← 운동 설명") }
+            Spacer(Modifier.width(12.dp))
+            Text("$group 운동", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+        }
+        Text("운동을 누르면 수행 방법과 동작 GIF를 확인할 수 있습니다.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        LazyColumn(contentPadding = PaddingValues(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            items(catalog.filter { koreanPart(it.defaultUiPart) == group }, key = { it.presetId }) { preset ->
+                ElevatedCard(Modifier.fillMaxWidth().clickable { onPresetSelected(preset.presetId) }) {
+                    ListItem(
+                        headlineContent = { Text(if (preset.nameKo.isBlank()) preset.nameEn else preset.nameKo) },
+                        supportingContent = { Text(contents[preset.presetId]?.keyCue ?: group) }
+                    )
+                }
             }
         }
     }
@@ -300,6 +357,14 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     val name = preset.nameKo.ifBlank { preset.nameEn }
     val detail = content ?: ExerciseContent(presetId = preset.presetId, titleKo = name, equipment = "운동 장비")
     val context = LocalContext.current
+    // Register an animated decoder explicitly. Without this, some Coil 2 image-loader
+    // configurations render only the first GIF frame even though the network response is valid.
+    val gifImageLoader = remember(context) {
+        ImageLoader.Builder(context).components {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) add(ImageDecoderDecoder.Factory())
+            else add(GifDecoder.Factory())
+        }.build()
+    }
     val scope = rememberCoroutineScope()
     var mediaUrl by remember(preset.presetId) { mutableStateOf<String?>(null) }
     var mediaMatchedName by remember(preset.presetId) { mutableStateOf<String?>(null) }
@@ -321,6 +386,11 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     Text("주요: ${detail.primaryMuscles.filter { it.isNotBlank() }.joinToString(" · ").ifBlank { koreanPart(preset.defaultUiPart) }}")
                     if (detail.secondaryMuscles.isNotEmpty()) Text("보조: ${detail.secondaryMuscles.joinToString(" · ")}", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("장비: ${detail.equipment}", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    MuscleActivationMap(
+                        primaryMuscles = detail.primaryMuscles,
+                        secondaryMuscles = detail.secondaryMuscles,
+                        fallbackGroup = koreanPart(preset.defaultUiPart)
+                    )
                 }
             }
         }
@@ -342,7 +412,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     } else {
                         val request = ImageRequest.Builder(context).data(mediaUrl).crossfade(true)
                             .addHeader("Authorization", "Bearer ${mediaAuthToken.orEmpty()}").build()
-                        AsyncImage(model = request, contentDescription = "$name 동작 GIF", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp))
+                        AsyncImage(model = request, imageLoader = gifImageLoader, contentDescription = "$name 동작 GIF", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp))
                         mediaMatchedName?.let { matched -> Text("WorkoutX 매칭: $matched", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         if (!mediaMatchedExactly) Text("이름 기준 유사 동작일 수 있으니 장비·그립·각도를 확인하세요.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
                     }
@@ -391,12 +461,23 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
 @Composable private fun BodySelector(selected: String, select: (String) -> Unit) {
     val groups = listOf("가슴", "등", "하체", "어깨", "팔", "복부")
     val context = LocalContext.current
-    val bodyMap = remember { BitmapFactory.decodeStream(context.assets.open("body-map-segmented-v3.png")).asImageBitmap() }
+    val selectedAsset = when (selected) {
+        "등" -> "body-map-selected-back.png"
+        "어깨" -> "body-map-selected-shoulders.png"
+        "팔" -> "body-map-selected-arms.png"
+        "복부" -> "body-map-selected-abs.png"
+        "하체" -> "body-map-selected-legs.png"
+        else -> "body-map-selected-chest.png"
+    }
+    // Selection is baked into each artwork state so a colored overlay can never
+    // spill over the body silhouette or fight the illustration's anatomy lines.
+    val bodyMap = remember(selectedAsset) { BitmapFactory.decodeStream(context.assets.open(selectedAsset)).asImageBitmap() }
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Text("신체 부위를 직접 누르거나 아래 버튼을 선택하세요.")
-        Box(Modifier.fillMaxWidth().aspectRatio(bodyMap.width.toFloat() / bodyMap.height).padding(vertical = 8.dp)
-            .pointerInput(Unit) { detectTapGestures { point -> select(bodyPartAt(point.x / size.width, point.y / size.height)) } }) {
-            Image(bodyMap, contentDescription = "운동 부위 선택 신체 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        Box(Modifier.fillMaxWidth().aspectRatio(bodyMap.width.toFloat() / bodyMap.height).padding(vertical = 8.dp)) {
+            Image(bodyMap, contentDescription = "운동 부위 선택 신체 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize().pointerInput(selected) {
+                detectTapGestures { point -> select(bodyPartAt(point.x / size.width, point.y / size.height)) }
+            })
         }
         Text("선택: $selected", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
         groups.chunked(3).forEach { row ->
@@ -408,14 +489,16 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     }
 }
 private fun bodyPartAt(x: Float, y: Float): String {
+    // The artwork has two full figures with a narrow gap at the middle.
+    if (x in .46f.. .54f || y < .11f || y > .93f) return "가슴"
     val front = x < 0.5f
     val localX = if (front) x / 0.5f else (x - 0.5f) / 0.5f
-    if (localX < 0.18f || localX > 0.82f) return if (y < 0.42f) "어깨" else "팔"
+    if (localX < .13f || localX > .87f) return if (y < .28f) "어깨" else "팔"
     return when {
-        y < 0.28f -> "어깨"
-        front && y < 0.46f -> "가슴"
-        !front && y < 0.60f -> "등"
-        y < 0.63f -> "복부"
+        y < .23f -> "어깨"
+        front && y < .30f -> "가슴"
+        !front && y < .47f -> "등"
+        front && y < .48f -> "복부"
         else -> "하체"
     }
 }
@@ -428,8 +511,69 @@ private fun bodyPartAt(x: Float, y: Float): String {
             onStartConsumed()
         }
     }
-    if (editing != null) WorkoutEditor(catalog, editing!!, { onSave(it); editing = null }, { editing = null })
-    else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
+    BackHandler(enabled = editing != null) { editing = null }
+    AnimatedContent(
+        // Keep the outgoing record as AnimatedContent's target state.  The previous
+        // implementation looked up `editing!!` again while the exit animation ran;
+        // pressing Back had already set it to null and crashed the app.
+        targetState = editing,
+        transitionSpec = {
+            (fadeIn() + slideInHorizontally { it / 5 }) togetherWith
+                (fadeOut() + slideOutHorizontally { -it / 5 })
+        },
+        label = "workoutRecordTransition"
+    ) { recordToEdit ->
+        if (recordToEdit != null) WorkoutEditor(catalog, recordToEdit, { onSave(it); editing = null }, { editing = null })
+        else WorkoutHistory(catalog, records, { editing = it }, { onDelete(it) }, onExport)
+    }
+}
+
+@Composable private fun MuscleActivationMap(
+    primaryMuscles: List<String>,
+    secondaryMuscles: List<String>,
+    fallbackGroup: String
+) {
+    val context = LocalContext.current
+    val primary = muscleRegionsFor(primaryMuscles, fallbackGroup)
+    val secondary = muscleRegionsFor(secondaryMuscles, "") - primary
+    val selectedAsset = activationMapAsset(primary)
+    // This uses a prepared anatomical state image instead of painting a generic
+    // polygon over the body. Therefore the lime activation always stops exactly
+    // on the illustration's own muscle boundaries.
+    val muscleMap = remember(selectedAsset) { BitmapFactory.decodeStream(context.assets.open(selectedAsset)).asImageBitmap() }
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("자극 지도 · 전면 / 후면", fontWeight = FontWeight.Bold)
+        Box(Modifier.fillMaxWidth().heightIn(max = 360.dp).aspectRatio(muscleMap.width.toFloat() / muscleMap.height), contentAlignment = Alignment.Center) {
+            Image(muscleMap, contentDescription = "자극 부위 지도", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("● 형광: 주요 자극군", color = Lime, style = MaterialTheme.typography.labelSmall)
+            if (secondary.isNotEmpty()) Text("보조 자극은 위 설명 참고", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.labelSmall)
+        }
+    }
+}
+
+private fun activationMapAsset(primary: Set<String>): String = when {
+    "chest" in primary -> "body-map-selected-chest.png"
+    "back" in primary -> "body-map-selected-back.png"
+    "shoulder" in primary -> "body-map-selected-shoulders.png"
+    "arms" in primary -> "body-map-selected-arms.png"
+    "abs" in primary -> "body-map-selected-abs.png"
+    "thighs" in primary || "calves" in primary -> "body-map-selected-legs.png"
+    else -> "body-map-selected-chest.png"
+}
+
+private fun muscleRegionsFor(muscles: List<String>, fallbackGroup: String): Set<String> {
+    val text = (muscles + fallbackGroup).joinToString(" ")
+    return buildSet {
+        if (text.contains("가슴")) add("chest")
+        if (text.contains("어깨") || text.contains("삼각근")) add("shoulder")
+        if (text.contains("이두") || text.contains("삼두") || text.contains("전완") || text.contains("팔")) add("arms")
+        if (text.contains("복부") || text.contains("복직") || text.contains("코어") || text.contains("외복")) add("abs")
+        if (text.contains("대퇴") || text.contains("햄스트링") || text.contains("사두") || text.contains("둔근") || text.contains("하체")) add("thighs")
+        if (text.contains("종아리")) add("calves")
+        if (text.contains("등") || text.contains("광배") || text.contains("승모")) add("back")
+    }
 }
 
 @Composable private fun WorkoutHistory(catalog: List<ExercisePreset>, records: List<WorkoutRecord>, edit: (WorkoutRecord) -> Unit, remove: (String) -> Unit, export: () -> Unit) {
@@ -451,7 +595,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
                 ElevatedCard(Modifier.fillMaxWidth().clickable { edit(record) }) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text(record.date, fontWeight = FontWeight.Bold)
-                        Text(record.exercises.map { it.preset.nameKo }.distinct().joinToString(" · ").ifBlank { "운동 이름 없음" }, maxLines = 2)
+                        Text(record.title.ifBlank { "제목 없음" }, maxLines = 1, fontWeight = FontWeight.SemiBold)
                     }
                     IconButton(onClick = { edit(record) }) { Icon(Icons.Default.Edit, "수정") }
                     IconButton(onClick = { deleting = record }) { Icon(Icons.Default.Delete, "삭제") }
@@ -464,6 +608,7 @@ private fun bodyPartAt(x: Float, y: Float): String {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun WorkoutEditor(catalog: List<ExercisePreset>, initial: WorkoutRecord, save: (WorkoutRecord) -> Unit, cancel: () -> Unit) {
     var date by remember { mutableStateOf(initial.date) }
+    var title by remember { mutableStateOf(initial.title) }
     var exercises by remember { mutableStateOf(initial.exercises) }
     var pickerOpen by remember { mutableStateOf(false) }
     Scaffold(topBar = {
@@ -471,14 +616,18 @@ private fun bodyPartAt(x: Float, y: Float): String {
             title = { Text("운동 기록 수정") },
             navigationIcon = { TextButton(onClick = cancel) { Text("취소") } },
             actions = {
-                TextButton(onClick = { save(initial.copy(date = date, exercises = exercises)) }, enabled = exercises.isNotEmpty()) {
+                TextButton(onClick = { save(initial.copy(date = date, exercises = exercises, title = title.trim())) }, enabled = exercises.isNotEmpty()) {
                     Text("SAVE", color = Lime, fontWeight = FontWeight.Bold)
                 }
             }
         )
     }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding).padding(horizontal = 16.dp), contentPadding = PaddingValues(bottom = 30.dp)) {
-            item { OutlinedTextField(date, { date = it }, label = { Text("날짜 (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth()) }
+            item {
+                OutlinedTextField(date, { date = it }, label = { Text("날짜 (YYYY-MM-DD)") }, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(10.dp))
+                OutlinedTextField(title, { title = it }, label = { Text("기록 제목 (예: 등, 하체)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+            }
             items(exercises, key = { it.id }) { exercise ->
                 ExerciseCard(exercise, { changed -> exercises = exercises.map { if (it.id == changed.id) changed else it } }, { exercises = exercises.filterNot { it.id == exercise.id } })
             }
@@ -607,7 +756,9 @@ private fun loadStateLabel(state: String) = when (state) {
 
 @Composable private fun loadCatalog(): List<ExercisePreset> {
     val context = androidx.compose.ui.platform.LocalContext.current
-    return remember { Json { ignoreUnknownKeys = true }.decodeFromString<CatalogFile>(context.assets.open("friend_exercise_catalog_v1.json").bufferedReader().use { it.readText() }).presets }
+    // The shared catalog intentionally uses null for some optional variant fields.
+    // Coerce those values to each model property's default instead of crashing at startup.
+    return remember { Json { ignoreUnknownKeys = true; coerceInputValues = true }.decodeFromString<CatalogFile>(context.assets.open("friend_exercise_catalog_v1.json").bufferedReader().use { it.readText() }).presets }
 }
 @Composable private fun loadExerciseContents(): Map<String, ExerciseContent> {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -635,7 +786,8 @@ private suspend fun requestExerciseMedia(preset: ExercisePreset): ExerciseMedia 
         ?: error("GIF를 보려면 Google 로그인이 필요합니다.")
     val name = URLEncoder.encode(preset.nameEn, "UTF-8")
     val equipment = URLEncoder.encode(preset.equipmentVariantId, "UTF-8")
-    val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/exercise-media?name=$name&equipment=$equipment")
+    val presetId = URLEncoder.encode(preset.presetId, "UTF-8")
+    val request = Request.Builder().url("${BuildConfig.ANALYSIS_BASE_URL}/api/exercise-media?name=$name&equipment=$equipment&presetId=$presetId")
         .header("Authorization", "Bearer $token").build()
     analysisClient.newCall(request).execute().use { response ->
         val body = response.body?.string().orEmpty()
@@ -701,7 +853,7 @@ private fun exportPayload(records: List<WorkoutRecord>): String = JSONObject(map
     "exportedAt" to java.time.Instant.now().toString(), "workouts" to records.map(::exportWorkout)
 )).toString(2)
 private fun exportWorkout(record: WorkoutRecord): Map<String, Any?> = mapOf(
-    "sourceRecordId" to record.id, "status" to "completed", "title" to null,
+    "sourceRecordId" to record.id, "status" to "completed", "title" to record.title.ifBlank { null },
     "startedAt" to java.time.LocalDate.parse(record.date).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant().toString(),
     "endedAt" to null, "memo" to null,
     "exercises" to record.exercises.mapIndexed { exerciseIndex, exercise ->
@@ -728,7 +880,7 @@ private fun saveWorkout(record: WorkoutRecord) { val user = FirebaseAuth.getInst
 private fun deleteWorkout(id: String) { val user = FirebaseAuth.getInstance().currentUser ?: return; FirebaseFirestore.getInstance().collection("users").document(user.uid).collection("workouts").document(id).delete() }
 private fun recordToMap(record: WorkoutRecord): Map<String, Any?> = mapOf(
     "id" to record.id,
-    "sourceRecordId" to record.id, "status" to "completed", "title" to null, "memo" to null,
+    "sourceRecordId" to record.id, "status" to "completed", "title" to record.title.ifBlank { null }, "memo" to null,
     "startedAt" to com.google.firebase.Timestamp(java.util.Date.from(java.time.LocalDate.parse(record.date).atTime(12, 0).atZone(java.time.ZoneId.systemDefault()).toInstant())),
     "endedAt" to com.google.firebase.Timestamp.now(),
     "exercises" to record.exercises.mapIndexed { index, exercise ->
@@ -789,5 +941,5 @@ private fun recordFromMap(document: com.google.firebase.firestore.DocumentSnapsh
         is String -> startedAt.take(10)
         else -> today()
     }
-    return WorkoutRecord(document.id, date, exercises)
+    return WorkoutRecord(document.id, date, exercises, data["title"] as? String ?: "")
 }
