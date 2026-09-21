@@ -111,6 +111,11 @@ data class WorkoutRecord(
     val id: String = UUID.randomUUID().toString(), val date: String,
     val exercises: List<WorkoutEntry>, val title: String = ""
 )
+data class AnalysisRecord(
+    val id: String, val mode: String, val result: String, val createdAtMillis: Long,
+    val triggerWorkoutId: String?, val rangeFrom: String, val rangeTo: String, val workoutCount: Int
+)
+private data class AnalysisRequestResult(val text: String, val succeeded: Boolean)
 
 class MainActivity : ComponentActivity() {
     private val auth by lazy { FirebaseAuth.getInstance() }
@@ -164,6 +169,7 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
     var analysisLoadingMode by remember { mutableStateOf<String?>(null) }
     val analysisScope = rememberCoroutineScope()
     var records by remember { mutableStateOf(emptyList<WorkoutRecord>()) }
+    var savedAnalyses by remember { mutableStateOf(emptyList<AnalysisRecord>()) }
     var user by remember { mutableStateOf(FirebaseAuth.getInstance().currentUser) }
     DisposableEffect(Unit) {
         val listener = FirebaseAuth.AuthStateListener { user = it.currentUser }
@@ -174,12 +180,20 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
         val currentUser = user
         if (currentUser == null) {
             records = emptyList()
+            savedAnalyses = emptyList()
             onDispose { }
         } else {
-            val registration = FirebaseFirestore.getInstance().collection("users").document(currentUser.uid)
+            val userDocument = FirebaseFirestore.getInstance().collection("users").document(currentUser.uid)
+            val workoutRegistration = userDocument
                 .collection("workouts").orderBy("startedAt", Query.Direction.DESCENDING)
                 .addSnapshotListener { snapshot, _ -> records = snapshot?.documents?.mapNotNull(::recordFromMap) ?: emptyList() }
-            onDispose { registration.remove() }
+            val analysisRegistration = userDocument.collection("analyses").orderBy("createdAtMillis", Query.Direction.DESCENDING)
+                .addSnapshotListener { snapshot, _ ->
+                    savedAnalyses = snapshot?.documents?.mapNotNull(::analysisFromMap) ?: emptyList()
+                    savedAnalyses.firstOrNull { it.mode != "cumulative" }?.let { recentAnalysisResult = it.result }
+                    savedAnalyses.firstOrNull { it.mode == "cumulative" }?.let { cumulativeAnalysisResult = it.result }
+                }
+            onDispose { workoutRegistration.remove(); analysisRegistration.remove() }
         }
     }
     val scheme = if (darkMode) darkColorScheme(background = Dark, surface = Color(0xFF242526), primary = Lime)
@@ -207,13 +221,15 @@ private fun LiftLogApp(onGoogleLogin: () -> Unit, onExport: (String) -> Unit) {
                     }, onDelete = { id ->
                         records = records.filterNot { it.id == id }; deleteWorkout(id)
                     }, onExport = { onExport(exportPayload(records)) })
-                    3 -> AnalysisScreen(records, recentAnalysisResult, cumulativeAnalysisResult, analysisLoadingMode, onAnalyze = { cumulative ->
+                    3 -> AnalysisScreen(records, recentAnalysisResult, cumulativeAnalysisResult, savedAnalyses, analysisLoadingMode, onAnalyze = { cumulative ->
                         if (analysisLoadingMode == null) {
                             analysisScope.launch {
                                 val mode = if (cumulative) "cumulative" else "recent"
                                 analysisLoadingMode = mode
-                                val result = requestAnalysis(appContext, records, cumulative)
-                                if (cumulative) cumulativeAnalysisResult = result else recentAnalysisResult = result
+                                val response = requestAnalysis(appContext, records, cumulative)
+                                if (cumulative) cumulativeAnalysisResult = response.text else recentAnalysisResult = response.text
+                                val currentUser = user
+                                if (response.succeeded && currentUser != null) runCatching { saveAnalysis(currentUser.uid, records, cumulative, response.text) }
                                 analysisLoadingMode = null
                             }
                         }
@@ -746,9 +762,25 @@ private fun loadStateLabel(state: String) = when (state) {
 
 @Composable private fun AnalysisScreen(
     records: List<WorkoutRecord>, recentResult: String, cumulativeResult: String,
-    analyzingMode: String?, onAnalyze: (Boolean) -> Unit
+    savedAnalyses: List<AnalysisRecord>, analyzingMode: String?, onAnalyze: (Boolean) -> Unit
 ) {
     var openedResult by rememberSaveable { mutableStateOf<String?>(null) }
+    var showHistory by rememberSaveable { mutableStateOf(false) }
+    var openedHistory by remember { mutableStateOf<AnalysisRecord?>(null) }
+    if (openedHistory != null) {
+        BackHandler { openedHistory = null }
+        AnalysisDetail(
+            title = "${if (openedHistory!!.mode == "cumulative") "누적" else "최근"} 분석 · ${analysisDate(openedHistory!!.createdAtMillis)}",
+            result = openedHistory!!.result,
+            onBack = { openedHistory = null }
+        )
+        return
+    }
+    if (showHistory) {
+        BackHandler { showHistory = false }
+        AnalysisHistory(savedAnalyses, onBack = { showHistory = false }, onOpen = { openedHistory = it })
+        return
+    }
     if (openedResult != null) {
         BackHandler { openedResult = null }
         AnalysisDetail(
@@ -769,9 +801,33 @@ private fun loadStateLabel(state: String) = when (state) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
             Text(if (analyzingMode == "cumulative") "누적 기록을 분석하는 중…" else "최근 기록을 분석하는 중…", style = MaterialTheme.typography.bodySmall)
         }
+        TextButton(onClick = { showHistory = true }, enabled = savedAnalyses.isNotEmpty()) {
+            Text("저장된 분석 ${savedAnalyses.size}개 보기")
+        }
         AnalysisResultCard("최근 분석 결과", recentResult, onClick = { openedResult = "recent" })
         Spacer(Modifier.height(10.dp))
         AnalysisResultCard("누적 분석 결과", cumulativeResult, onClick = { openedResult = "cumulative" })
+    }
+}
+
+@Composable private fun AnalysisHistory(analyses: List<AnalysisRecord>, onBack: () -> Unit, onOpen: (AnalysisRecord) -> Unit) {
+    Column(Modifier.fillMaxSize().padding(20.dp)) {
+        TextButton(onClick = onBack, contentPadding = PaddingValues(0.dp)) { Text("← AI 분석") }
+        Text("분석 기록", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Black)
+        Text("분석 당시의 기록 범위와 결과가 보존됩니다.", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(12.dp))
+        LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            items(analyses, key = { it.id }) { analysis ->
+                ElevatedCard(Modifier.fillMaxWidth().clickable { onOpen(analysis) }) {
+                    Column(Modifier.padding(16.dp)) {
+                        Text(if (analysis.mode == "cumulative") "누적 기록 분석" else "최근 기록 분석", fontWeight = FontWeight.Black)
+                        Text("${analysisDate(analysis.createdAtMillis)} · ${analysis.workoutCount}개 기록", style = MaterialTheme.typography.bodySmall)
+                        if (analysis.rangeFrom.isNotBlank()) Text("${analysis.rangeFrom} ~ ${analysis.rangeTo}", style = MaterialTheme.typography.bodySmall)
+                        Text(analysis.result.replace('\n', ' '), maxLines = 2, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -873,11 +929,11 @@ private suspend fun requestExerciseMedia(preset: ExercisePreset): ExerciseMedia 
         ExerciseMedia("${BuildConfig.ANALYSIS_BASE_URL}$gifPath", json.optString("name", preset.nameEn), json.optBoolean("matchedExactly", false), token)
     }
 }
-private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecord>, cumulative: Boolean): String = withContext(Dispatchers.IO) {
+private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecord>, cumulative: Boolean): AnalysisRequestResult = withContext(Dispatchers.IO) {
     try {
         val prefs = context.getSharedPreferences("liftlog", Context.MODE_PRIVATE)
         val idToken = FirebaseAuth.getInstance().currentUser?.getIdToken(false)?.await()?.token
-            ?: return@withContext "AI 분석에는 Google 로그인이 필요합니다."
+            ?: return@withContext AnalysisRequestResult("AI 분석에는 Google 로그인이 필요합니다.", false)
         val history = records.map(::analysisRecord)
         val profile = mapOf("heightCm" to prefs.getString("heightCm", ""), "weightKg" to prefs.getString("weightKg", ""))
         val workoutData: Map<String, Any?> = if (cumulative) mapOf(
@@ -895,11 +951,12 @@ private suspend fun requestAnalysis(context: Context, records: List<WorkoutRecor
             .post(payload.toRequestBody("application/json; charset=utf-8".toMediaType())).build()
         analysisClient.newCall(request).execute().use { response ->
             val text = response.body?.string().orEmpty()
-            if (!response.isSuccessful) return@withContext "분석 서버 오류 (${response.code}): ${JSONObject(text).optString("error", text)}"
+            if (!response.isSuccessful) return@withContext AnalysisRequestResult("분석 서버 오류 (${response.code}): ${JSONObject(text).optString("error", text)}", false)
             val json = JSONObject(text)
-            listOf("총평" to json.optString("summary"), "잘한 점" to json.optString("good"), "개선할 점" to json.optString("bad"), "다음 운동 추천" to json.optString("nextFocus")).filter { it.second.isNotBlank() }.joinToString("\n\n") { "${it.first}\n${it.second}" }
+            val result = listOf("총평" to json.optString("summary"), "잘한 점" to json.optString("good"), "개선할 점" to json.optString("bad"), "다음 운동 추천" to json.optString("nextFocus")).filter { it.second.isNotBlank() }.joinToString("\n\n") { "${it.first}\n${it.second}" }
+            AnalysisRequestResult(result.ifBlank { "AI 분석 결과가 비어 있습니다." }, result.isNotBlank())
         }
-    } catch (error: Exception) { "AI 분석 연결 실패: ${error.message ?: error.javaClass.simpleName}" }
+    } catch (error: Exception) { AnalysisRequestResult("AI 분석 연결 실패: ${error.message ?: error.javaClass.simpleName}", false) }
 }
 private fun analysisRecord(record: WorkoutRecord): Map<String, Any?> = mapOf(
     "sourceRecordId" to record.id,
@@ -953,6 +1010,36 @@ private fun exportWorkout(record: WorkoutRecord): Map<String, Any?> = mapOf(
 private fun normalizedPart(part: String) = if (part in setOf("chest", "back", "legs", "shoulders", "arms", "abs")) part else "abs"
 private fun saveWorkout(record: WorkoutRecord) { val user = FirebaseAuth.getInstance().currentUser ?: return; FirebaseFirestore.getInstance().collection("users").document(user.uid).collection("workouts").document(record.id).set(recordToMap(record)) }
 private fun deleteWorkout(id: String) { val user = FirebaseAuth.getInstance().currentUser ?: return; FirebaseFirestore.getInstance().collection("users").document(user.uid).collection("workouts").document(id).delete() }
+private suspend fun saveAnalysis(userId: String, records: List<WorkoutRecord>, cumulative: Boolean, result: String) {
+    val now = System.currentTimeMillis()
+    val newest = records.firstOrNull()
+    val oldest = records.lastOrNull()
+    val payload = mapOf(
+        "schemaVersion" to 1,
+        "mode" to if (cumulative) "cumulative" else "latest",
+        "result" to result,
+        "createdAtMillis" to now,
+        "createdAt" to com.google.firebase.firestore.FieldValue.serverTimestamp(),
+        "triggerWorkoutId" to newest?.id,
+        "rangeFrom" to oldest?.date.orEmpty(),
+        "rangeTo" to newest?.date.orEmpty(),
+        "workoutCount" to records.size
+    )
+    FirebaseFirestore.getInstance().collection("users").document(userId).collection("analyses").add(payload).await()
+}
+private fun analysisFromMap(document: com.google.firebase.firestore.DocumentSnapshot): AnalysisRecord? {
+    val mode = document.getString("mode") ?: return null
+    val result = document.getString("result") ?: return null
+    return AnalysisRecord(
+        id = document.id, mode = mode, result = result,
+        createdAtMillis = document.getLong("createdAtMillis") ?: 0L,
+        triggerWorkoutId = document.getString("triggerWorkoutId"),
+        rangeFrom = document.getString("rangeFrom").orEmpty(),
+        rangeTo = document.getString("rangeTo").orEmpty(),
+        workoutCount = (document.getLong("workoutCount") ?: 0L).toInt()
+    )
+}
+private fun analysisDate(milliseconds: Long): String = if (milliseconds > 0) java.text.SimpleDateFormat("yyyy.MM.dd HH:mm", java.util.Locale.KOREA).format(java.util.Date(milliseconds)) else "저장 날짜 없음"
 private fun recordToMap(record: WorkoutRecord): Map<String, Any?> = mapOf(
     "id" to record.id,
     "sourceRecordId" to record.id, "status" to "completed", "title" to record.title.ifBlank { null }, "memo" to null,
