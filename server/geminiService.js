@@ -1,8 +1,9 @@
-// Keep the HTTP request comfortably below the mobile/hosting proxy timeout.
-// A second model is a better recovery path than waiting on a busy model.
-const REQUEST_TIMEOUT_MS = 5_500;
-const ANALYSIS_BUDGET_MS = 18_000;
-const FORMAT_RETRY_BUDGET_MS = 4_500;
+// A detailed Korean workout analysis can legitimately take over a minute.
+// Android waits for 190 seconds and Render web services support long requests,
+// so allow the model enough time while keeping one bounded overall deadline.
+const REQUEST_TIMEOUT_MS = 90_000;
+const ANALYSIS_BUDGET_MS = 165_000;
+const FORMAT_RETRY_BUDGET_MS = 15_000;
 const MAX_RECENT_SESSIONS = 60;
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
