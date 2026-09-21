@@ -1,6 +1,6 @@
 // Keep the HTTP request comfortably below the mobile/hosting proxy timeout.
 // A second model is a better recovery path than waiting on a busy model.
-const REQUEST_TIMEOUT_MS = 8_000;
+const REQUEST_TIMEOUT_MS = 5_500;
 const ANALYSIS_BUDGET_MS = 18_000;
 const FORMAT_RETRY_BUDGET_MS = 4_500;
 const MAX_RECENT_SESSIONS = 60;
@@ -90,11 +90,19 @@ async function generateGeminiWithRetry(url, payload, { budgetMs = ANALYSIS_BUDGE
 function modelCandidates(primaryModel) {
   // Render may still have an old GEMINI_MODEL value. Keep it as the first
   // choice, but do not let a busy legacy model make the whole request fail.
-  return [...new Set([
-    primaryModel,
+  const preferred = [
     'gemini-3.5-flash-lite',
+    // This alias was verified with this project's API key and is the most
+    // broadly available stable Flash route for the production service.
+    'gemini-flash-latest',
     'gemini-flash-lite-latest'
-  ].filter(Boolean))];
+  ];
+  // Do not spend most of the request budget on the previously unstable model
+  // when an old Render environment variable still points at it.
+  const candidates = primaryModel === 'gemini-3.6-flash'
+    ? preferred
+    : [primaryModel, ...preferred];
+  return [...new Set(candidates.filter(Boolean))];
 }
 
 async function generateWithModelFallback(payload, apiKey, primaryModel, budgetMs = ANALYSIS_BUDGET_MS) {
