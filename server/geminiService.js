@@ -1,5 +1,8 @@
-const REQUEST_TIMEOUT_MS = 12_000;
-const ANALYSIS_BUDGET_MS = 26_000;
+// Keep the HTTP request comfortably below the mobile/hosting proxy timeout.
+// A second model is a better recovery path than waiting on a busy model.
+const REQUEST_TIMEOUT_MS = 8_000;
+const ANALYSIS_BUDGET_MS = 18_000;
+const FORMAT_RETRY_BUDGET_MS = 4_500;
 const MAX_RECENT_SESSIONS = 60;
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
@@ -54,7 +57,7 @@ async function postJsonWithTimeout(url, payload, timeoutMs) {
   }
 }
 
-async function generateGeminiWithRetry(url, payload, { budgetMs = ANALYSIS_BUDGET_MS, attempts = 2 } = {}) {
+async function generateGeminiWithRetry(url, payload, { budgetMs = ANALYSIS_BUDGET_MS, attempts = 1 } = {}) {
   const deadline = Date.now() + budgetMs;
   let lastError;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -76,9 +79,46 @@ async function generateGeminiWithRetry(url, payload, { budgetMs = ANALYSIS_BUDGE
           : new GeminiAnalysisError('AI 분석 서버 연결에 실패했습니다. 잠시 후 다시 시도해주세요.', 502);
     }
     if (attempt < attempts - 1 && deadline - Date.now() > 1_500) {
-      const delay = Math.min(900 + Math.floor(Math.random() * 300), deadline - Date.now() - 500);
+      const delay = Math.min(500 + Math.floor(Math.random() * 250), deadline - Date.now() - 500);
       console.warn(`Gemini transient failure; retrying once in ${delay}ms.`);
       await sleep(delay);
+    }
+  }
+  throw lastError || new GeminiAnalysisError('AI 분석 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.', 504);
+}
+
+function modelCandidates(primaryModel) {
+  // Render may still have an old GEMINI_MODEL value. Keep it as the first
+  // choice, but do not let a busy legacy model make the whole request fail.
+  return [...new Set([
+    primaryModel,
+    'gemini-3.5-flash-lite',
+    'gemini-flash-lite-latest'
+  ].filter(Boolean))];
+}
+
+async function generateWithModelFallback(payload, apiKey, primaryModel, budgetMs = ANALYSIS_BUDGET_MS) {
+  const deadline = Date.now() + budgetMs;
+  const models = modelCandidates(primaryModel);
+  let lastError;
+
+  for (let index = 0; index < models.length; index += 1) {
+    const remaining = deadline - Date.now();
+    if (remaining < 1_500) break;
+    const model = models[index];
+    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
+    try {
+      const data = await generateGeminiWithRetry(apiUrl, payload, {
+        budgetMs: Math.min(REQUEST_TIMEOUT_MS, remaining),
+        attempts: 1
+      });
+      return { data, model };
+    } catch (error) {
+      lastError = error;
+      // API key / permission / malformed request issues cannot be improved by
+      // selecting another model, so return the actionable error immediately.
+      if (!(error instanceof GeminiAnalysisError) || ![502, 503, 504].includes(error.status)) throw error;
+      console.warn(`Gemini model ${model} unavailable; trying fallback model.`);
     }
   }
   throw lastError || new GeminiAnalysisError('AI 분석 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.', 504);
@@ -180,20 +220,22 @@ function analysisPrompt(workoutData, analysisMode) {
 }
 
 export async function analyzeWithGemini(workoutData, analysisMode, apiKey, model) {
-  const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${apiKey}`;
   const prompt = analysisPrompt(prepareAnalysisData(workoutData, analysisMode), analysisMode);
-  const data = await generateGeminiWithRetry(apiUrl, {
+  const payload = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: { temperature: 0.2, maxOutputTokens: 800, responseMimeType: 'application/json' }
-  });
+  };
+  const initial = await generateWithModelFallback(payload, apiKey, model);
+  const data = initial.data;
   const parsed = parseAnalysisJson(candidateText(data));
   if (parsed) return parsed;
 
-  const retryData = await generateGeminiWithRetry(apiUrl, {
+  const retryPayload = {
     contents: [{ parts: [{ text: `${prompt}\n응답이 잘리지 않도록 각 항목을 한 문장, 100자 이내로 줄여 완전한 JSON만 반환해.` }] }],
     generationConfig: { temperature: 0.15, maxOutputTokens: 500, responseMimeType: 'application/json' }
-  }, { budgetMs: 6_000, attempts: 1 });
-  const retryParsed = parseAnalysisJson(candidateText(retryData));
+  };
+  const retry = await generateWithModelFallback(retryPayload, apiKey, initial.model, FORMAT_RETRY_BUDGET_MS);
+  const retryParsed = parseAnalysisJson(candidateText(retry.data));
   if (retryParsed) return retryParsed;
   throw new GeminiAnalysisError('AI 분석 응답 형식이 올바르지 않습니다. 잠시 후 다시 시도해주세요.', 502);
 }
